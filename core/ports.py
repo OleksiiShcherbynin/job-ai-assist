@@ -2,6 +2,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Protocol
 
+from core.models import Attachment, IncomingMessage
+
 class VacancySource(Protocol):
 
     def fetch_vacancies(self, limit: int = 15) -> list[dict]: ... 
