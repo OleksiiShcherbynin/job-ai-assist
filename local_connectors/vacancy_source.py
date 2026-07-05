@@ -19,7 +19,7 @@ _CACHE = pathlib.Path(__file__).resolve().parent.parent / "fixtures" / "profesia
 
 
 class ProfesiaSource:
-    LIST_URL = "https://www.profesia.sk/praca/bratislava/"
+    LIST_URL = "https://www.profesia.sk/praca/bratislava/?remote_work=0&search_anywhere=engineer%2C+student&sort_by=relevance"
 
     def __init__(
         self,
