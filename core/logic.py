@@ -1,3 +1,4 @@
+import unicodedata
 from datetime import datetime
 
 from core.models import (
@@ -7,14 +8,33 @@ from core.models import (
 )
 
 
+def _strip_accents(s: str) -> str:
+    """Remove diacritics: 'študent' -> 'student', 'príležitosť' -> 'prilezitost'."""
+    nfkd = unicodedata.normalize("NFKD", s)
+    return "".join(ch for ch in nfkd if not unicodedata.combining(ch))
+
+
+def _searchable_text(v: Vacancy) -> str:
+    """Combine all searchable fields of a vacancy into one normalized string."""
+    parts = [
+        v.raw_text or "",
+        v.role or "",
+        v.company or "",
+        v.additional_info or "",
+    ]
+    return _strip_accents(" ".join(parts).lower())
+
+
 def rejection_reason(
     v: Vacancy,
     prefs: SearchPreferences,
     profile: CandidateProfile,
 ) -> str | None:
-    text = (v.raw_text or "").lower()
+    text = _searchable_text(v)
+
     for word in prefs.deal_breakers:
-        if word.lower() in text:
+        needle = _strip_accents(word.lower())
+        if needle in text:
             return f"deal-breaker: {word!r}"
 
     if prefs.work_formats and v.work_format and v.work_format not in prefs.work_formats:
@@ -24,7 +44,8 @@ def rejection_reason(
         return f"salary range {v.salary_max} < minimum {prefs.min_salary}"
 
     for skill in prefs.must_have:
-        if skill.lower() not in text:
+        needle = _strip_accents(skill.lower())
+        if needle not in text:
             return f"no mandatory: {skill!r}"
 
     return None

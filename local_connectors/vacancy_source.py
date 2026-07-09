@@ -8,18 +8,19 @@ from bs4 import BeautifulSoup
 from core.ports import VacancySource
 
 _HEADERS = {
-    "X-Requested-With": "XMLHttpRequest",
     "User-Agent": (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-    )
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5",
 }
 
 _CACHE = pathlib.Path(__file__).resolve().parent.parent / "fixtures" / "profesia_vacancies.json"
 
 
 class ProfesiaSource:
-    LIST_URL = "https://www.profesia.sk/praca/bratislava/?remote_work=0&search_anywhere=engineer%2C+student&sort_by=relevance"
+    LIST_URL = "https://www.profesia.sk/praca/bratislava/?count_days=2&education_levels[]=2&education_levels[]=8&education_levels[]=3&education_levels[]=5&education_levels[]=9&jobtypes[]=1&jobtypes[]=2&jobtypes[]=4&jobtypes[]=32&offer_agent_flags=196&search_anywhere=student%2C+IT%2C+junior&sort_by=relevance"
 
     def __init__(
         self,
@@ -65,13 +66,14 @@ class ProfesiaSource:
         links: list[str] = []
         seen: set[str] = set()
         for page in range(self.start_page, self.stop_page + 1):
-            page_url = self.LIST_URL if page == 1 else f"{self.LIST_URL}?page_num={page}"
+            page_url = self.LIST_URL if page == 1 else f"{self.LIST_URL}&page_num={page}"
             html = client.get(page_url).text
 
             soup = BeautifulSoup(html, "html.parser")
-            for a in soup.select('a[href*="/praca/"]'):
+            # <ul class="list"> → <li class="list-row"> → <h2> → <a id="offerXXX">
+            for a in soup.select('ul.list li.list-row h2 a[id^="offer"]'):
                 href = a.get("href", "")
-                if not href or "/praca/bratislava/" in href:
+                if not href:
                     continue
 
                 href = urljoin(self.LIST_URL, href)

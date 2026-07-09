@@ -32,7 +32,7 @@ def _get_gemini() -> instructor.Instructor:
     return _gemini
 
 EXTRACT_MODEL = "gemini-3.1-flash-lite"
-JUDGE_MODEL = "gemini-3.5-flash"
+JUDGE_MODEL = "gemini-2.5-flash" #gemini-3.5-flash gemini-3.1-flash-lite | gemini-3-flash gemini-2.5-flash gemini-2.5-flash-lite
 
 _FALLBACKS: dict[str, list[str]] = {
     EXTRACT_MODEL: [
@@ -40,11 +40,17 @@ _FALLBACKS: dict[str, list[str]] = {
         "gemini-2.5-flash",
     ],
     JUDGE_MODEL: [
-        "gemini-2.5-flash"
+        "gemini-2.5-flash-lite",
+        "gemini-3.5-flash"
     ],
 }
 
 _RETRYABLE = ("503", "429", "500", "502", "504", "UNAVAILABLE", "capacity", "rate limit")
+
+
+def _is_quota_error(error: Exception) -> bool:
+    error_str = str(error)
+    return "429" in error_str or "RESOURCE_EXHAUSTED" in error_str or "quota exceeded" in error_str or "rate limit" in error_str
 
 
 def _call_with_fallback[T: BaseModel](
@@ -114,11 +120,17 @@ def score_match(vacancy_raw: str, profile_summary: str, prefs_summary: str) -> M
         f"Candidate: {profile_summary}\n"
         f"Priorities: {prefs_summary}"
     )
-    return _call_with_fallback(
-        schema=MatchResult,
-        messages=[
-            {"role": "user", "content": f"{instruction}\n\n---\n{vacancy_raw}"},
-        ],
-        model=JUDGE_MODEL,
-    )
+    try:
+        return _call_with_fallback(
+            schema=MatchResult,
+            messages=[
+                {"role": "user", "content": f"{instruction}\n\n---\n{vacancy_raw}"},
+            ],
+            model=JUDGE_MODEL,
+        )
+    except Exception as error:
+        if _is_quota_error(error):
+            print("  ⚠️ Gemini quota exhausted; returning neutral score for this vacancy.")
+            return MatchResult(score=0, reasons=["Gemini quota exhausted"])
+        raise
 
