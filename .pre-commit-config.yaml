@@ -1,0 +1,27 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.1.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-added-large-files
+        args: ['--maxkb=1000']
+
+  - repo: https://github.com/gitleaks/gitleaks-action
+    rev: v2.4.11
+    hooks:
+      - id: gitleaks
+        stages: [commit]
+
+  - repo: https://github.com/PyCQA/bandit
+    rev: 1.8.1
+    hooks:
+      - id: bandit
+        args: ['-r', 'core', 'local_connectors']
+        stages: [commit]
+
+  - repo: https://github.com/kynan/nbstripout
+    rev: 0.8.1
+    hooks:
+      - id: nbstripout
+        files: .ipynb$

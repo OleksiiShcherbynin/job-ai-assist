@@ -1,0 +1,51 @@
+name: Security CI
+
+on: [push, pull_request]
+
+jobs:
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Run bandit (SAST)
+        run: bandit -r core local_connectors -f json -o bandit-report.json || true
+
+      - name: Run pip-audit (SCA)
+        run: pip-audit -r requirements.txt --format json -o audit-report.json || true
+
+      - name: Run gitleaks (secret scanning)
+        run: |
+          pip install gitleaks
+          gitleaks detect --no-git --report-path gitleaks-report.json || true
+
+      - name: Check bandit results
+        run: |
+          if python -c "import json; r=json.load(open('bandit-report.json')); exit(len([x for x in r.get('results', []) if x['severity'] == 'HIGH']) > 0)"; then
+            echo "❌ HIGH severity issues found in SAST"
+            exit 1
+          fi
+        if: hashFiles('bandit-report.json') != ''
+
+      - name: Upload reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: security-reports
+          path: |
+            bandit-report.json
+            audit-report.json
+            gitleaks-report.json
