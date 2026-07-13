@@ -26,4 +26,5 @@ ENV/
 .vscode/
 .idea/
 
+# Scraped data cache
 fixtures/
