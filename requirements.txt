@@ -1,0 +1,7 @@
+pydantic==2.13.4
+google-genai==2.10.0
+instructor==1.15.4
+httpx==0.28.1
+beautifulsoup4==4.15.0
+pypdf==6.10.2
+python-dotenv==1.2.2
