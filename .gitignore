@@ -2,7 +2,9 @@
 .env
 .env.*
 !.env.example
-.emv
+
+# Personal data (resumes / PII) — keep local only
+data/
 
 # Python bytecode & cache
 __pycache__/
