@@ -1,6 +1,7 @@
 import json
 import pathlib
-from urllib.parse import urljoin
+import time
+from urllib.parse import urljoin, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
@@ -17,6 +18,14 @@ _HEADERS = {
 }
 
 _CACHE = pathlib.Path(__file__).resolve().parent.parent / "fixtures" / "profesia_vacancies.json"
+
+_ALLOWED_HOSTS = ("profesia.sk", "www.profesia.sk")
+
+
+def _is_allowed_host(url: str) -> bool:
+    parsed = urlparse(url)
+    hostname = parsed.hostname or ""
+    return hostname in _ALLOWED_HOSTS
 
 
 class ProfesiaSource:
@@ -47,7 +56,7 @@ class ProfesiaSource:
             links = self._collect_links(client)[:limit]
 
             texts: list[dict] = []
-            for link in links:
+            for i, link in enumerate(links):
                 v_resp = client.get(link)
                 soup = BeautifulSoup(v_resp.text, "html.parser")
                 title = soup.select_one("h1")
@@ -59,6 +68,8 @@ class ProfesiaSource:
                     "title": title.get_text(strip=True) if title else "",
                     "text": text,
                 })
+                if i < len(links) - 1:
+                    time.sleep(0.5)
 
         return texts
 
@@ -70,13 +81,14 @@ class ProfesiaSource:
             html = client.get(page_url).text
 
             soup = BeautifulSoup(html, "html.parser")
-            # <ul class="list"> → <li class="list-row"> → <h2> → <a id="offerXXX">
             for a in soup.select('ul.list li.list-row h2 a[id^="offer"]'):
                 href = a.get("href", "")
                 if not href:
                     continue
 
                 href = urljoin(self.LIST_URL, href)
+                if not _is_allowed_host(href):
+                    continue
                 if href not in seen:
                     seen.add(href)
                     links.append(href)
