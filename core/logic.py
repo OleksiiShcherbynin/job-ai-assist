@@ -5,6 +5,7 @@ from core.models import (
     CandidateProfile,
     SearchPreferences,
     Vacancy,
+    VacancyCard,
 )
 
 
@@ -34,6 +35,36 @@ def _title_text(v: Vacancy) -> str:
     rejects the junior roles they are advertising.
     """
     return strip_accents((v.role or "").lower())
+
+
+def card_rejection_reason(card: VacancyCard, prefs: SearchPreferences) -> str | None:
+    """Reject from the listing row alone — before a page load or an LLM call.
+
+    Everything here is decided by data Profesia already shows in the search
+    results, so a rejection at this stage costs nothing.
+    """
+    title = strip_accents(card.title.lower())
+
+    for word in prefs.deal_breakers:
+        if strip_accents(word.lower()) in title:
+            return f"deal-breaker: {word!r}"
+
+    if prefs.require_title_keywords:
+        wanted = [strip_accents(keyword.lower()) for keyword in prefs.require_title_keywords]
+        if not any(keyword in title for keyword in wanted):
+            return f"title matches none of {prefs.require_title_keywords}"
+
+    floor = {
+        "month": prefs.min_salary_month,
+        "hour": prefs.min_salary_hour,
+    }.get(card.salary_period)
+    if floor is not None:
+        # 'Od 1 550' quotes a lower bound and no maximum; judge it on that figure.
+        top = card.salary_max if card.salary_max is not None else card.salary_min
+        if top is not None and top < floor:
+            return f"pay {top} EUR/{card.salary_period} below floor {float(floor)}"
+
+    return None
 
 
 def rejection_reason(

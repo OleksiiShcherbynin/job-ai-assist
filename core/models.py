@@ -51,6 +51,16 @@ class SearchPreferences(BaseModel):
     must_have: list[str] = Field(default_factory=list)
     deal_breakers: list[str] = Field(default_factory=list)
 
+    # Card-level filtering. Pay floors are per period because listings mix
+    # hourly student rates with monthly salaries; one number cannot judge both.
+    min_salary_month: float | None = None
+    min_salary_hour: float | None = None
+    require_title_keywords: list[str] = Field(
+        default_factory=list,
+        description="If set, a title must contain one of these. Off by default: a "
+        "weak match only scores low, while a wrongly dropped one is never seen.",
+    )
+
 
 class VacancyCard(BaseModel):
     """What a search-listing row shows, before the posting itself is fetched.
