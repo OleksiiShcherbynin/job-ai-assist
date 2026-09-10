@@ -95,8 +95,9 @@ def test_a_dead_account_is_reported_in_one_line_not_a_traceback(tmp_path, monkey
     assert "Traceback" not in caplog.text
 
 
-def test_an_ordinary_failure_still_gets_a_traceback(tmp_path, monkeypatch, caplog):
-    """Anything we have not diagnosed should keep its stack trace."""
+def test_an_ordinary_failure_keeps_its_traceback_and_reports_failure(tmp_path, monkeypatch, caplog):
+    """Anything undiagnosed keeps its stack trace. In --once there is no
+    tomorrow inside this process, so exiting 0 would tell a script it worked."""
     import app.main as main_module
 
     monkeypatch.setenv("GOOGLE_API_KEY", "x")
@@ -107,8 +108,19 @@ def test_an_ordinary_failure_still_gets_a_traceback(tmp_path, monkeypatch, caplo
 
     code = main_module.main(["--once"])
 
-    assert code == 0, "an odd failure should not stop tomorrow's run"
+    assert code == 1
     assert "something odd" in caplog.text
+
+
+def test_a_successful_once_run_reports_success(tmp_path, monkeypatch, report):
+    import app.main as main_module
+
+    monkeypatch.setenv("GOOGLE_API_KEY", "x")
+    monkeypatch.setattr(main_module, "load_dotenv", lambda *a, **k: None)
+    monkeypatch.setattr(main_module, "load_config", lambda path: config_at(tmp_path))
+    monkeypatch.setattr(main_module, "run_today", lambda config, today: report)
+
+    assert main_module.main(["--once"]) == 0
 
 
 def test_a_fresh_install_has_not_run_today(tmp_path):

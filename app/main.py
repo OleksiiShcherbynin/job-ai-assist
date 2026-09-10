@@ -118,6 +118,8 @@ def main(argv: list[str] | None = None) -> int:
 
     config = load_config(args.config)
 
+    failed = False
+
     while True:
         today = date.today()
         store = Store(config.state_path)
@@ -130,9 +132,11 @@ def main(argv: list[str] | None = None) -> int:
             log.info("running for %s", today)
             try:
                 report = run_today(config, today)
+                failed = False
                 log.info("seen %d, scored %d, filtered %d, unprocessed %d",
                          report.seen, len(report.judged), len(report.rejected), len(report.failures))
             except Exception as error:
+                failed = True
                 if is_account_error(error):
                     # Diagnosed and actionable: say what to do, not where it broke.
                     # Nobody watches this log live, and a stack trace buries the
@@ -147,7 +151,10 @@ def main(argv: list[str] | None = None) -> int:
                 log.exception("the run failed; will try again on the next check")
 
         if args.once:
-            return 0
+            # In the loop a failed run just waits for the next check. With --once
+            # there is no next check inside this process, so a caller must be able
+            # to tell a finished run from a broken one.
+            return 1 if failed else 0
         time.sleep(IDLE_CHECK_SECONDS)
 
 

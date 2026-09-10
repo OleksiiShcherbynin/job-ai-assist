@@ -34,15 +34,17 @@ def _get_gemini() -> instructor.Instructor:
 EXTRACT_MODEL = "gemini-3.1-flash-lite"
 JUDGE_MODEL = "gemini-3.5-flash" #gemini-3.5-flash gemini-3.1-flash-lite | gemini-3-flash gemini-2.5-flash gemini-2.5-flash-lite
 
-# Verified against the live API on 2026-09-10. gemini-2.5-flash-lite used to be
-# the fallback for both and now answers 404: "no longer available to new users".
-# JUDGE_MODEL also listed itself, which was never a fallback at all.
+# Checked against the live API on 2026-09-10: these answer 429 (they exist and
+# are gated on billing) rather than 404. The whole 2.5 family is retired for new
+# users — both gemini-2.5-flash-lite and gemini-2.5-flash now answer 404 — and
+# JUDGE_MODEL used to list itself, which was never a fallback at all.
 _FALLBACKS: dict[str, list[str]] = {
     EXTRACT_MODEL: [
         "gemini-3.5-flash-lite",
-        "gemini-2.5-flash",
+        "gemini-3.6-flash",
     ],
     JUDGE_MODEL: [
+        "gemini-3.6-flash",
         "gemini-3.5-flash-lite",
     ],
 }
