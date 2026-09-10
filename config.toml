@@ -1,0 +1,75 @@
+# Daily vacancy run.
+#
+# Every value below is derived from 20 postings picked by hand as good matches;
+# the reasoning lives in docs/superpowers/specs/2026-09-10-daily-vacancy-run-design.md.
+# Change anything here without touching code — that is the point of this file.
+
+[search]
+# The user's own query, with search_anywhere widened. Measured on 2026-09-09:
+# "student, IT, junior" returns 81 vacancies a day, adding data/analytik gives
+# 91, adding brigada/trainee gives 99. "data" and "analytik" are the second
+# strongest cluster in the reference set after "junior".
+list_url = "https://www.profesia.sk/praca/bratislava/?count_days=1&education_levels[]=2&education_levels[]=8&education_levels[]=3&education_levels[]=5&education_levels[]=9&jobtypes[]=1&jobtypes[]=2&jobtypes[]=4&jobtypes[]=32&offer_agent_flags=196&search_anywhere=student%2C+IT%2C+junior%2C+data%2C+analytik%2C+brigada%2C+trainee&sort_by=relevance"
+
+start_page = 1
+# 20 rows per page; ~99 vacancies a day needs 5, so 8 leaves room to grow.
+# The walk stops early once a page adds no new offer ids.
+stop_page = 8
+
+[preferences]
+# Not used for filtering — the search query does the targeting. Kept as a record
+# of intent and for the summary handed to the scoring model.
+desired_roles = ["junior", "student", "brigádnik", "trainee", "analytik", "data", "developer"]
+
+# Matched against the TITLE only. Against the full text these reject real
+# matches: "pod vedením seniorného kolegu" and "nemusíš byť senior" both
+# advertise junior roles. Measured on the reference set, title scope gives
+# 1 false rejection out of 20 where full text gives 5.
+#
+# Dropped from the original list: "Midle" (a typo, and "Middle" matches nothing
+# either), "English C1"/"English C2" (never written that way — real ads say
+# "anglický jazyk B1/B2", and C1/C2 English appears in 0 of 20).
+# "manager" is deliberately absent: a PM role is among the picked matches.
+deal_breakers = ["senior", "medior", "architect"]
+
+# Empty on purpose. No technology appears in more than 35% of the reference set
+# (SQL 7/20, AI 7/20, Python 5/20), so any required skill would cut the majority
+# of what the user actually wants.
+must_have = []
+
+# Off by default. Requiring one of these in the title cuts 81 daily vacancies to
+# 31, but loses real roles ("IT konzultant", "IT technik") while the junk it
+# removes ("Upratovač/ka v materskej škole") would simply score low anyway.
+# Switch on only if the report gets too noisy to skim.
+require_title_keywords = []
+
+locations = ["Bratislava"]
+
+# No pay floor. Salary appears on every card, but listings mix hourly student
+# rates with monthly salaries, and 9 of 20 reference matches quote pay the
+# filter would have to guess about. Set min_salary_month / min_salary_hour here
+# if you want one — they are judged separately and never against each other.
+
+[run]
+resume_path = "data/CV_OleksiiShcherbynin.pdf"
+state_path = "state/seen.db"
+report_dir = "reports"
+
+# Hard ceiling on Gemini calls per run, whatever the quotas say.
+call_budget = 250
+
+# Vacancies below this score go to the report's tail rather than its body.
+min_score = 40
+
+# Google no longer publishes free-tier limits. Read yours at
+# https://aistudio.google.com/rate-limit and correct these — the run paces
+# itself against them rather than waiting to be told off with a 429.
+# The daily count resets at midnight Pacific, not local midnight.
+
+[quota."gemini-3.1-flash-lite"]
+rpm = 15
+rpd = 1000
+
+[quota."gemini-3.5-flash"]
+rpm = 10
+rpd = 1500
