@@ -119,6 +119,15 @@ The user's actual free-tier limits, read from AI Studio on 2026-09-10:
 | gemini-3.5-flash-lite | 15 | 500 |
 | gemini-3.5-flash | 5 | **20** |
 
+These are throughput limits and sit on top of billing, not instead of it. As of
+the first live run on 2026-09-10 the key answers 429 "prepayment credits are
+depleted" for every model, so none of the above applies yet; the project's
+billing at https://ai.studio/projects has to be settled first. The code treats
+that as a distinct, non-retryable condition — see `is_account_error`.
+
+`gemini-2.5-flash-lite` is retired (404, "no longer available to new users") and
+must not appear in a fallback chain.
+
 Twenty judge calls a day forces a three-stage cascade. An earlier estimate of
 250 came from third-party blogs and was wrong by more than tenfold; a design
 built on it would not have run. Each stage now draws on a different quota:
