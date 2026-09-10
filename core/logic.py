@@ -1,5 +1,4 @@
 import unicodedata
-from datetime import datetime
 
 from core.models import (
     CandidateProfile,
@@ -111,11 +110,3 @@ def missing_fields(v: Vacancy, prefs: SearchPreferences) -> list[str]:
 def has_enough_info(v: Vacancy, prefs: SearchPreferences, max_gap: int = 2) -> bool:
     
     return len(missing_fields(v, prefs)) <= max_gap
-
-
-def apply_reply_updates(v: Vacancy) -> None:
-
-    v.salary_min = v.salary_min
-    v.salary_max = v.salary_max
-    v.work_format = v.work_format
-    v.location = v.location

@@ -1,5 +1,3 @@
-import json
-import pathlib
 import re
 import time
 from urllib.parse import urljoin, urlparse, urlunparse
@@ -9,7 +7,6 @@ from bs4 import BeautifulSoup
 
 from core.logic import strip_accents
 from core.models import VacancyCard
-from core.ports import VacancySource
 
 _HEADERS = {
     "User-Agent": (
@@ -19,8 +16,6 @@ _HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.5",
 }
-
-_CACHE = pathlib.Path(__file__).resolve().parent.parent / "fixtures" / "profesia_vacancies.json"
 
 _ALLOWED_HOSTS = ("profesia.sk", "www.profesia.sk")
 
@@ -132,75 +127,87 @@ def parse_cards(html: str, base_url: str = "https://www.profesia.sk/") -> list[V
 
 
 class ProfesiaSource:
+    """Reads the search listing and, separately, individual postings.
+
+    The split is what makes the daily run affordable: cards are cheap and carry
+    enough to reject most vacancies, so a posting is only fetched once it has
+    survived the card filter.
+    """
+
     LIST_URL = "https://www.profesia.sk/praca/bratislava/?count_days=1&education_levels[]=2&education_levels[]=8&education_levels[]=3&education_levels[]=5&education_levels[]=9&jobtypes[]=1&jobtypes[]=2&jobtypes[]=4&jobtypes[]=32&offer_agent_flags=196&search_anywhere=student%2C+IT%2C+junior&sort_by=relevance"
 
     def __init__(
         self,
-        use_cache: bool = False,
+        list_url: str | None = None,
         start_page: int = 1,
         stop_page: int = 1,
+        client: httpx.Client | None = None,
+        throttle: float = 0.5,
+        use_cache: bool = False,
     ) -> None:
         if start_page < 1 or stop_page < start_page:
-            raise ValueError("очікується 1 <= start_page <= stop_page")
+            raise ValueError("expected 1 <= start_page <= stop_page")
         self.use_cache = use_cache
+        self.list_url = list_url or self.LIST_URL
         self.start_page = start_page
         self.stop_page = stop_page
+        self.throttle = throttle
+        self._client = client or httpx.Client(headers=_HEADERS, timeout=30, follow_redirects=True)
+
+    def close(self) -> None:
+        self._client.close()
+
+    def fetch_cards(self) -> list[VacancyCard]:
+        collected: dict[str, VacancyCard] = {}
+
+        for page in range(self.start_page, self.stop_page + 1):
+            url = self.list_url if page == self.start_page else f"{self.list_url}&page_num={page}"
+            try:
+                response = self._client.get(url)
+                response.raise_for_status()
+            except httpx.HTTPError:
+                break  # keep the pages already read rather than losing the run
+
+            fresh = [c for c in parse_cards(response.text) if c.offer_id not in collected]
+            if not fresh:
+                # Past the last page Profesia repeats the final one instead of
+                # serving an empty result, so "nothing new" is the stop signal.
+                break
+
+            for card in fresh:
+                collected[card.offer_id] = card
+            if self.throttle:
+                time.sleep(self.throttle)
+
+        return list(collected.values())
+
+    def fetch_detail(self, url: str) -> str:
+        if not _is_allowed_host(url):
+            raise ValueError(f"refusing to fetch outside Profesia: {url}")
+
+        response = self._client.get(url)
+        response.raise_for_status()
+
+        soup = BeautifulSoup(response.text, "html.parser")
+        for junk in soup(["script", "style", "noscript"]):
+            junk.decompose()
+        body = soup.select_one(".job-ad__desc, .main-content, article, main, body")
+        return body.get_text(separator=" ", strip=True) if body else ""
 
     def fetch_vacancies(self, limit: int = 15) -> list[dict]:
-        if self.use_cache and _CACHE.exists():
-            return json.loads(_CACHE.read_text(encoding="utf-8"))[:limit]
+        """Cards and postings in one call, in the shape the notebook expects.
 
-        texts = self._fetch_live(limit)
-        self._save_cache(texts)
-        return texts
-
-    def _fetch_live(self, limit: int) -> list[dict]:
-        with httpx.Client(headers=_HEADERS, timeout=30, follow_redirects=True) as client:
-            links = self._collect_links(client)[:limit]
-
-            texts: list[dict] = []
-            for i, link in enumerate(links):
-                v_resp = client.get(link)
-                soup = BeautifulSoup(v_resp.text, "html.parser")
-                title = soup.select_one("h1")
-                body = soup.select_one(".job-ad__desc, .main-content, article, body")
-
-                text = body.get_text(separator=" ", strip=True) if body else ""
-                texts.append({
-                    "url": link,
-                    "title": title.get_text(strip=True) if title else "",
-                    "text": text,
-                })
-                if i < len(links) - 1:
-                    time.sleep(0.5)
-
-        return texts
-
-    def _collect_links(self, client: httpx.Client) -> list[str]:
-        links: list[str] = []
-        seen: set[str] = set()
-        for page in range(self.start_page, self.stop_page + 1):
-            page_url = self.LIST_URL if page == 1 else f"{self.LIST_URL}&page_num={page}"
-            html = client.get(page_url).text
-
-            soup = BeautifulSoup(html, "html.parser")
-            for a in soup.select('ul.list li.list-row h2 a[id^="offer"]'):
-                href = a.get("href", "")
-                if not href:
-                    continue
-
-                href = urljoin(self.LIST_URL, href)
-                if not _is_allowed_host(href):
-                    continue
-                if href not in seen:
-                    seen.add(href)
-                    links.append(href)
-
-        return links
-
-    def _save_cache(self, texts: list[dict]) -> None:
-        _CACHE.parent.mkdir(exist_ok=True)
-        _CACHE.write_text(json.dumps(texts, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
-_check: VacancySource = ProfesiaSource()
+        Kept for notebooks/agent_sees.ipynb only; delete it with the notebook.
+        The daily run uses fetch_cards/fetch_detail so it can reject vacancies
+        before paying for the page load.
+        """
+        postings: list[dict] = []
+        for index, card in enumerate(self.fetch_cards()[:limit]):
+            postings.append({
+                "url": card.url,
+                "title": card.title,
+                "text": self.fetch_detail(card.url),
+            })
+            if self.throttle and index < limit - 1:
+                time.sleep(self.throttle)
+        return postings
