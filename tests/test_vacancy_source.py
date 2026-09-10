@@ -43,6 +43,14 @@ def test_home_office_hint_is_read_from_the_location(cards):
     assert without_hint.allows_home_office is False
 
 
+def test_the_salary_label_excludes_badges_sitting_next_to_it(cards):
+    """Some cards carry a 'Можливість для людей з України' badge in the same
+    label group; the pay shown in the report must not absorb it."""
+    with_badge = next(c for c in cards if c.offer_id == "O5278412")
+
+    assert with_badge.salary_text == "1 500 - 1 800 EUR/mesiac"
+
+
 @pytest.mark.parametrize(
     "text, expected",
     [

@@ -60,10 +60,20 @@ def card_rejection_reason(card: VacancyCard, prefs: SearchPreferences) -> str | 
     if floor is not None:
         # 'Od 1 550' quotes a lower bound and no maximum; judge it on that figure.
         top = card.salary_max if card.salary_max is not None else card.salary_min
-        if top is not None and top < floor:
+        if top is not None and _pay_is_plausible(top, card.salary_period) and top < floor:
             return f"pay {top} EUR/{card.salary_period} below floor {float(floor)}"
 
     return None
+
+
+# Below this a monthly figure is an employer's unit slip, not an offer: Profesia
+# carries a Zurich Insurance internship advertised at '8 EUR/mesiac'. Rejecting
+# such a vacancy on its stated pay throws away a real match over a typo.
+_IMPLAUSIBLE_MONTHLY_PAY = 100.0
+
+
+def _pay_is_plausible(amount: float, period: str | None) -> bool:
+    return not (period == "month" and amount < _IMPLAUSIBLE_MONTHLY_PAY)
 
 
 def rejection_reason(

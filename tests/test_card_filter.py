@@ -77,6 +77,24 @@ def test_open_ended_pay_is_judged_on_its_lower_bound(prefs):
     assert card_rejection_reason(open_ended, prefs) is None
 
 
+def test_an_implausible_monthly_figure_is_treated_as_unknown(prefs):
+    """Profesia carries a Zurich Insurance internship listed at '8 EUR/mesiac'.
+    The employer picked the wrong unit; a pay floor must not reject a real
+    vacancy over an obvious data error."""
+    prefs.min_salary_month = 900
+    mislabelled = card(title="Internship at Underwriting Service",
+                       salary_min=8.0, salary_max=8.0, salary_period="month")
+
+    assert card_rejection_reason(mislabelled, prefs) is None
+
+
+def test_a_genuinely_low_monthly_wage_still_rejects(prefs):
+    prefs.min_salary_month = 900
+    low = card(salary_min=600.0, salary_max=600.0, salary_period="month")
+
+    assert card_rejection_reason(low, prefs) is not None
+
+
 def test_missing_pay_is_not_a_rejection(prefs):
     """Absence of data is not evidence against; let the LLM judge the posting."""
     prefs.min_salary_month = 1000
