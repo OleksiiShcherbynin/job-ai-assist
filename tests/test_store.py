@@ -52,6 +52,23 @@ def test_a_different_company_with_the_same_title_is_not_a_repost(store):
     assert store.find_repost(card(offer_id="O5350242", title="Junior Developer", company="Anasoft")) is None
 
 
+def test_a_recorded_verdict_can_be_read_back(store):
+    """A repost must inherit the original's score instead of being judged again."""
+    store.record(card(), status="scored-final", score=77,
+                 reasons=["fits the stack"], reasons_ru=["подходит по стеку"])
+
+    verdict = store.verdict("O5000001")
+
+    assert verdict.score == 77
+    assert verdict.reasons == ["fits the stack"]
+    assert verdict.reasons_ru == ["подходит по стеку"]
+    assert verdict.status == "scored-final"
+
+
+def test_reading_a_verdict_that_was_never_recorded_gives_nothing(store):
+    assert store.verdict("O9999999") is None
+
+
 def test_no_calls_are_counted_before_any_are_made(store):
     assert store.calls_used("gemini-3.5-flash") == 0
 

@@ -79,7 +79,7 @@ def _pay_is_plausible(amount: float, period: str | None) -> bool:
 def rejection_reason(
     v: Vacancy,
     prefs: SearchPreferences,
-    profile: CandidateProfile,
+    profile: CandidateProfile | None = None,
 ) -> str | None:
     text = _searchable_text(v)
     title = _title_text(v)

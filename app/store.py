@@ -6,7 +6,9 @@ than JSON because a JSON store rewrites the whole file per write and loses
 everything if the container is killed mid-write.
 """
 
+import json
 import sqlite3
+from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -57,6 +59,16 @@ def quota_day(moment: datetime) -> date:
     return moment.astimezone(_QUOTA_TZ).date()
 
 
+@dataclass
+class Verdict:
+    """What a previous run decided about a vacancy."""
+
+    status: str
+    score: int | None
+    reasons: list[str] = field(default_factory=list)
+    reasons_ru: list[str] = field(default_factory=list)
+
+
 def fingerprint(card: VacancyCard) -> str:
     """Identity of the posting itself, independent of its offer id.
 
@@ -94,10 +106,14 @@ class Store:
         detail_text: str | None = None,
         vacancy_json: str | None = None,
         score: int | None = None,
-        reasons_json: str | None = None,
+        reasons: list[str] | None = None,
+        reasons_ru: list[str] | None = None,
         moment: datetime | None = None,
     ) -> None:
         now = (moment or datetime.now(timezone.utc)).isoformat()
+        reasons_json = json.dumps(
+            {"en": reasons or [], "ru": reasons_ru or []}, ensure_ascii=False
+        )
         self._connection.execute(
             """
             INSERT INTO vacancies (offer_id, fingerprint, title, company, url,
@@ -127,6 +143,22 @@ class Store:
             ),
         )
         self._connection.commit()
+
+    def verdict(self, offer_id: str) -> "Verdict | None":
+        row = self._connection.execute(
+            "SELECT status, score, reasons_json FROM vacancies WHERE offer_id = ?",
+            (offer_id,),
+        ).fetchone()
+        if row is None:
+            return None
+
+        reasons = json.loads(row["reasons_json"] or "{}")
+        return Verdict(
+            status=row["status"],
+            score=row["score"],
+            reasons=reasons.get("en", []),
+            reasons_ru=reasons.get("ru", []),
+        )
 
     def find_repost(self, card: VacancyCard) -> str | None:
         """The offer id this posting was already seen under, if any."""
