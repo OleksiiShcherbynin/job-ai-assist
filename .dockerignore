@@ -1,0 +1,25 @@
+# Secrets and personal data never enter the image; they are mounted at runtime.
+.env
+.env.*
+data/
+
+# Run output belongs to the host, not the image.
+state/
+reports/
+fixtures/
+
+.git/
+.github/
+.claude/
+docs/
+notebooks/
+tests/
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+.ipynb_checkpoints/
+.vscode/
+.idea/
