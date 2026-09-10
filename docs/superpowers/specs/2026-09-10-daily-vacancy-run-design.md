@@ -58,9 +58,9 @@ adapters. A new `app/` layer orchestrates.
 app/
   main.py       entrypoint; "ran today?" guard; exit
   pipeline.py   step sequence
-  state.py      SQLite: seen vacancies, quota counters
+  store.py      SQLite: seen vacancies, quota counters, run marker
   report.py     Markdown rendering
-  config.py     config.toml -> SearchPreferences + run settings
+  config.py     config.toml -> SearchPreferences, model roles, run settings
   pacing.py     client-side RPM/RPD limiter per model
 
 core/
@@ -73,15 +73,16 @@ local_connectors/
 
 ### Data flow
 
-| Step | Network | LLM | Survivors (measured) |
+| Step | Network | LLM | Survivors |
 |---|---|---|---|
-| `fetch_cards` | 5 listing pages | — | 81 |
-| `state.filter_seen` | — | — | new only |
-| `card_rejection_reason` | — | — | ~68 |
-| `fetch_detail` | 1 request each | — | 68 |
-| `extract` | — | 1 each | 68 |
-| `rejection_reason` | — | — | fewer |
-| `score_match` | — | 1 each | report |
+| `fetch_cards` | 5 listing pages | — | 99 |
+| `store.is_new` | — | — | new only |
+| `card_rejection_reason` | — | — | ~83 |
+| `fetch_detail` | 1 request each | — | ~83 |
+| `extract` | — | 1 each, flash-lite | ~83 |
+| `rejection_reason` | — | — | ~65 |
+| rough `score_match` | — | 1 each, 3.5-flash-lite | ~65 |
+| final judge | — | 1 each, 3.5-flash | ≤12 |
 
 ## State
 
@@ -106,11 +107,36 @@ criteria without re-scraping" a query rather than a subsystem.
 ## Quota handling
 
 Three limit types apply simultaneously: RPM, TPM and RPD. Daily quota resets at
-midnight Pacific Time, not local midnight.
+midnight Pacific Time, not local midnight — around 09:00 in Bratislava, i.e.
+after the morning run rather than before it.
 
-Per-model limits live in `config.toml` because Google no longer publishes them;
-the user reads their real values from AI Studio. `pacing.py` checks the counters
-before each call and waits if needed, so 429 should be rare by construction.
+Per-model limits live in `config.toml` because Google no longer publishes them.
+The user's actual free-tier limits, read from AI Studio on 2026-09-10:
+
+| Model | RPM | RPD |
+|---|---|---|
+| gemini-3.1-flash-lite | 15 | 500 |
+| gemini-3.5-flash-lite | 15 | 500 |
+| gemini-3.5-flash | 5 | **20** |
+
+Twenty judge calls a day forces a three-stage cascade. An earlier estimate of
+250 came from third-party blogs and was wrong by more than tenfold; a design
+built on it would not have run. Each stage now draws on a different quota:
+
+| Stage | Model | Calls/day | Share of its quota |
+|---|---|---|---|
+| extract | gemini-3.1-flash-lite | ~83 | 17% |
+| rough score | gemini-3.5-flash-lite | ~65 | 13% |
+| final judge | gemini-3.5-flash | ≤12 | 60% |
+
+Only the final stage sees the full resume against the full posting; the rough
+stage scores against a short profile summary. Finalists are the vacancies
+scoring at or above `min_score`, capped at `final_judge_limit` — deliberately
+below 20, so a retry or a manual re-run cannot exhaust the day. If the judge's
+quota is gone, the report carries the rough scores and says so.
+
+`pacing.py` checks the counters before each call and waits if needed, so 429
+should be rare by construction.
 
 When a 429 does arrive, the error code distinguishes the cause:
 

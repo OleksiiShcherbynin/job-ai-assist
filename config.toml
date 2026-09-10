@@ -50,26 +50,51 @@ locations = ["Bratislava"]
 # filter would have to guess about. Set min_salary_month / min_salary_hour here
 # if you want one — they are judged separately and never against each other.
 
+[models]
+# Which model runs which stage. Change these together with the quota blocks
+# below — the split across three daily quotas is what makes the run fit.
+extract = "gemini-3.1-flash-lite"
+rough_score = "gemini-3.5-flash-lite"
+final_judge = "gemini-3.5-flash"
+
 [run]
 resume_path = "data/CV_OleksiiShcherbynin.pdf"
 state_path = "state/seen.db"
 report_dir = "reports"
 
-# Hard ceiling on Gemini calls per run, whatever the quotas say.
+# Hard ceiling on Gemini calls per run, across all models, whatever the
+# per-model quotas allow. A stop-loss, not a plan.
 call_budget = 250
 
-# Vacancies below this score go to the report's tail rather than its body.
+# Vacancies below this score go to the report's tail rather than its body, and
+# are never promoted to the final judge.
 min_score = 40
+
+# How many finalists reach the expensive model. The judge has 20 calls a day;
+# spending all of them leaves nothing for a retry or a manual re-run, and the
+# daily reset lands at ~09:00 Bratislava — after the morning run, not before it.
+final_judge_limit = 12
 
 # Google no longer publishes free-tier limits. Read yours at
 # https://aistudio.google.com/rate-limit and correct these — the run paces
 # itself against them rather than waiting to be told off with a 429.
 # The daily count resets at midnight Pacific, not local midnight.
 
+# Three stages, three separate daily quotas, so none of them fills up:
+#   extract      ~83 calls  -> gemini-3.1-flash-lite  (17% of 500)
+#   rough score  ~65 calls  -> gemini-3.5-flash-lite  (13% of 500)
+#   final judge  <=12 calls -> gemini-3.5-flash       (60% of 20)
+# Only the last stage sees the full resume against the full posting; it is
+# reserved for vacancies that already scored above min_score.
+
 [quota."gemini-3.1-flash-lite"]
 rpm = 15
-rpd = 1000
+rpd = 500
+
+[quota."gemini-3.5-flash-lite"]
+rpm = 15
+rpd = 500
 
 [quota."gemini-3.5-flash"]
-rpm = 10
-rpd = 1500
+rpm = 5
+rpd = 20

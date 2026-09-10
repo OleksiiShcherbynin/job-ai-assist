@@ -21,12 +21,18 @@ locations = ["Bratislava"]
 min_salary_month = 900
 min_salary_hour = 6
 
+[models]
+extract = "gemini-3.1-flash-lite"
+rough_score = "gemini-3.5-flash-lite"
+final_judge = "gemini-3.5-flash"
+
 [run]
 resume_path = "data/CV.pdf"
 state_path = "state/seen.db"
 report_dir = "reports"
 call_budget = 150
 min_score = 40
+final_judge_limit = 12
 
 [quota."gemini-3.5-flash"]
 rpm = 10
@@ -85,6 +91,23 @@ def test_an_unlisted_model_gets_a_cautious_default(tmp_path):
 
     assert fallback.rpm <= 15
     assert fallback.rpd <= 250
+
+
+def test_each_stage_names_its_own_model(tmp_path):
+    """Three stages hit three separate daily quotas; which model does what has
+    to be tunable, because the quotas are."""
+    config = load_config(write(tmp_path, FULL))
+
+    assert config.models.extract == "gemini-3.1-flash-lite"
+    assert config.models.rough_score == "gemini-3.5-flash-lite"
+    assert config.models.final_judge == "gemini-3.5-flash"
+
+
+def test_the_finalist_cap_leaves_room_under_the_judges_daily_quota(tmp_path):
+    config = load_config(write(tmp_path, FULL))
+
+    assert config.final_judge_limit == 12
+    assert config.final_judge_limit < config.quota_for(config.models.final_judge).rpd
 
 
 def test_omitted_settings_fall_back_to_defaults(tmp_path):

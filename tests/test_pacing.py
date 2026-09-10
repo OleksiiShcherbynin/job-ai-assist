@@ -34,6 +34,7 @@ def config_with(rpm: int, rpd: int, tmp_path) -> RunConfig:
         stop_page=1,
         call_budget=100,
         min_score=0,
+        final_judge_limit=12,
         preferences=SearchPreferences(desired_roles=[]),
         quotas={MODEL: ModelQuota(rpm=rpm, rpd=rpd)},
     )

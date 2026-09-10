@@ -32,6 +32,19 @@ class ModelQuota:
 
 
 @dataclass(frozen=True)
+class ModelRoles:
+    """Which model does what.
+
+    The three stages draw on three separate daily quotas, which is the only way
+    the run fits: the judge allows 20 calls a day, so it may only see finalists.
+    """
+
+    extract: str = "gemini-3.1-flash-lite"
+    rough_score: str = "gemini-3.5-flash-lite"
+    final_judge: str = "gemini-3.5-flash"
+
+
+@dataclass(frozen=True)
 class RunConfig:
     resume_path: Path
     state_path: Path
@@ -41,7 +54,9 @@ class RunConfig:
     stop_page: int
     call_budget: int
     min_score: int
+    final_judge_limit: int
     preferences: SearchPreferences
+    models: ModelRoles = field(default_factory=ModelRoles)
     quotas: dict[str, ModelQuota] = field(default_factory=dict)
 
     def quota_for(self, model: str) -> ModelQuota:
@@ -76,6 +91,8 @@ def load_config(path: str | Path) -> RunConfig:
         stop_page=int(search.get("stop_page", 6)),
         call_budget=int(run.get("call_budget", 200)),
         min_score=int(run.get("min_score", 0)),
+        final_judge_limit=int(run.get("final_judge_limit", 12)),
+        models=ModelRoles(**raw.get("models", {})),
         preferences=SearchPreferences(
             desired_roles=preferences.get("desired_roles", []),
             deal_breakers=preferences.get("deal_breakers", []),
