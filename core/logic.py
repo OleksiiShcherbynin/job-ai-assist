@@ -25,16 +25,28 @@ def _searchable_text(v: Vacancy) -> str:
     return _strip_accents(" ".join(parts).lower())
 
 
+def _title_text(v: Vacancy) -> str:
+    """Only the role title, normalized.
+
+    Deal-breakers are matched here rather than against the whole posting: in the
+    body, seniority words describe colleagues ('pod vedenim seniorneho kolegu')
+    or reassure the reader ('nemusis byt senior'), and matching them there
+    rejects the junior roles they are advertising.
+    """
+    return _strip_accents((v.role or "").lower())
+
+
 def rejection_reason(
     v: Vacancy,
     prefs: SearchPreferences,
     profile: CandidateProfile,
 ) -> str | None:
     text = _searchable_text(v)
+    title = _title_text(v)
 
     for word in prefs.deal_breakers:
         needle = _strip_accents(word.lower())
-        if needle in text:
+        if needle in title:
             return f"deal-breaker: {word!r}"
 
     if prefs.work_formats and v.work_format and v.work_format not in prefs.work_formats:
