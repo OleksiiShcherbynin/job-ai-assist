@@ -23,7 +23,7 @@ from app.pipeline import Pipeline
 from app.report import LANGUAGES, RunReport, render_markdown
 from app.store import Store
 from core.models import CandidateProfile
-from local_connectors.llm import extract
+from local_connectors.llm import extract, is_account_error
 from local_connectors.resume_loader import load_resume_text
 from local_connectors.vacancy_source import ProfesiaSource
 
@@ -132,7 +132,18 @@ def main(argv: list[str] | None = None) -> int:
                 report = run_today(config, today)
                 log.info("seen %d, scored %d, filtered %d, unprocessed %d",
                          report.seen, len(report.judged), len(report.rejected), len(report.failures))
-            except Exception:
+            except Exception as error:
+                if is_account_error(error):
+                    # Diagnosed and actionable: say what to do, not where it broke.
+                    # Nobody watches this log live, and a stack trace buries the
+                    # one sentence that matters.
+                    log.error(
+                        "the Gemini API refuses every request for this key — check the "
+                        "project's billing at https://ai.studio/projects. Nothing will "
+                        "run until that is resolved. (%s)",
+                        str(error)[:200],
+                    )
+                    return 3
                 log.exception("the run failed; will try again on the next check")
 
         if args.once:

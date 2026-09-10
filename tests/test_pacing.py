@@ -109,16 +109,32 @@ def test_the_daily_limit_is_tracked_per_model(tmp_path, clock):
     pacer.wait_for_slot("gemini-3.1-flash-lite")  # a different model, untouched
 
 
+DEPLETED = (
+    "429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'Your prepayment "
+    "credits are depleted. Please go to AI Studio at https://ai.studio/projects to "
+    "manage your project and billing.', 'status': 'RESOURCE_EXHAUSTED'}}"
+)
+
+
 @pytest.mark.parametrize(
     "message, kind",
     [
         ("429 rate_limit_exceeded: per-minute request limit", RateLimitKind.TRANSIENT),
         ("429 too_many_requests", RateLimitKind.TRANSIENT),
         ("429 quota_exceeded: daily quota reached", RateLimitKind.DAILY),
+        (DEPLETED, RateLimitKind.ACCOUNT),
         ("503 UNAVAILABLE", RateLimitKind.OTHER),
     ],
 )
-def test_a_429_is_classified_by_which_quota_ran_out(message, kind):
-    """Google's own error page separates the per-minute codes from the daily
-    one, so a minute-limit hit must not be mistaken for a spent day."""
+def test_a_429_is_classified_by_what_actually_ran_out(message, kind):
+    """Google's own error page separates the per-minute codes from the daily one.
+    Depleted billing credits arrive as 429 too, and mean something else again:
+    no model will answer and no amount of waiting will help."""
     assert classify_rate_limit(Exception(message)) is kind
+
+
+def test_depleted_credits_are_not_mistaken_for_a_rate_limit():
+    """Observed on a live run: every model returned this, and the retry logic
+    turned 20 vacancies into 240 futile requests."""
+    assert classify_rate_limit(Exception(DEPLETED)) is not RateLimitKind.TRANSIENT
+    assert classify_rate_limit(Exception(DEPLETED)) is not RateLimitKind.DAILY

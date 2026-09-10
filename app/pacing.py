@@ -14,6 +14,7 @@ from typing import Callable
 
 from app.config import RunConfig
 from app.store import Store
+from local_connectors.llm import is_account_error
 
 _MINUTE = 60.0
 
@@ -25,6 +26,9 @@ class RateLimitKind(Enum):
     DAILY = "daily"
     """Daily quota: nothing clears it before midnight Pacific."""
 
+    ACCOUNT = "account"
+    """Billing, not throughput: no model will answer and waiting will not help."""
+
     OTHER = "other"
     """Not a rate limit at all."""
 
@@ -35,13 +39,21 @@ class DailyQuotaExhausted(RuntimeError):
         self.model = model
 
 
-def classify_rate_limit(error: Exception) -> RateLimitKind:
-    """Tell a spent day from a busy minute.
+class AccountBlocked(RuntimeError):
+    """The API refuses everything for a reason no retry can fix."""
 
-    The Gemini API reports 429 under three codes: rate_limit_exceeded and
+
+def classify_rate_limit(error: Exception) -> RateLimitKind:
+    """Tell a spent day from a busy minute from a dead account.
+
+    The Gemini API reports 429 under three codes — rate_limit_exceeded and
     too_many_requests for the per-minute and burst limits, quota_exceeded for
-    the daily one.
+    the daily one — and also uses 429 for depleted billing credits, which is
+    neither and must not be retried.
     """
+    if is_account_error(error):
+        return RateLimitKind.ACCOUNT
+
     text = str(error).lower()
     if "quota_exceeded" in text:
         return RateLimitKind.DAILY

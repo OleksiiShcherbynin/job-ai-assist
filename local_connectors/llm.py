@@ -34,18 +34,36 @@ def _get_gemini() -> instructor.Instructor:
 EXTRACT_MODEL = "gemini-3.1-flash-lite"
 JUDGE_MODEL = "gemini-3.5-flash" #gemini-3.5-flash gemini-3.1-flash-lite | gemini-3-flash gemini-2.5-flash gemini-2.5-flash-lite
 
+# Verified against the live API on 2026-09-10. gemini-2.5-flash-lite used to be
+# the fallback for both and now answers 404: "no longer available to new users".
+# JUDGE_MODEL also listed itself, which was never a fallback at all.
 _FALLBACKS: dict[str, list[str]] = {
     EXTRACT_MODEL: [
-        "gemini-2.5-flash-lite",
+        "gemini-3.5-flash-lite",
         "gemini-2.5-flash",
     ],
     JUDGE_MODEL: [
-        "gemini-2.5-flash-lite",
-        "gemini-3.5-flash"
+        "gemini-3.5-flash-lite",
     ],
 }
 
 _RETRYABLE = ("503", "429", "500", "502", "504", "UNAVAILABLE", "capacity", "rate limit")
+
+# A 429 does not always mean "too fast". Depleted billing credits arrive as one
+# too, from every model, and retrying it turned a single run into hundreds of
+# refused requests. Anything matching here must fail immediately.
+ACCOUNT_ERROR_MARKERS = (
+    "prepayment credits are depleted",
+    "billing",
+    "api key not valid",
+    "permission_denied",
+)
+
+
+def is_account_error(error: Exception) -> bool:
+    """True when no model will answer and no amount of waiting will help."""
+    text = str(error).lower()
+    return any(marker in text for marker in ACCOUNT_ERROR_MARKERS)
 
 _MAX_INPUT_CHARS = 20_000
 _FENCE = "untrusted_data"
@@ -95,6 +113,10 @@ def _call_with_fallback[T: BaseModel](
             except Exception as e:
                 last_error = e
                 error_str = str(e)
+                if is_account_error(e):
+                    # Every model in the chain will refuse this identically;
+                    # retrying spends nothing but time and the caller's patience.
+                    raise
                 # server error or rate limit
                 if any(marker in error_str for marker in _RETRYABLE):
                     wait = backoff * attempt

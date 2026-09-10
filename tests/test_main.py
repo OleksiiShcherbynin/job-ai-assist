@@ -70,6 +70,47 @@ def test_rerunning_the_same_day_overwrites_rather_than_piling_up(tmp_path, repor
     assert len(list(config.report_dir.glob("*.md"))) == 2
 
 
+DEPLETED = ("429 RESOURCE_EXHAUSTED. {'error': {'message': 'Your prepayment credits are "
+            "depleted. Please go to AI Studio at https://ai.studio/projects'}}")
+
+
+def test_a_dead_account_is_reported_in_one_line_not_a_traceback(tmp_path, monkeypatch, caplog):
+    """This runs unattended. A wall of stack trace in a log nobody watches is
+    worse than one sentence naming the page that fixes it."""
+    import app.main as main_module
+
+    monkeypatch.setenv("GOOGLE_API_KEY", "x")
+    monkeypatch.setattr(main_module, "load_dotenv", lambda *a, **k: None)
+    monkeypatch.setattr(main_module, "load_config", lambda path: config_at(tmp_path))
+
+    def refuse(config, today):
+        raise RuntimeError(DEPLETED)
+
+    monkeypatch.setattr(main_module, "run_today", refuse)
+
+    code = main_module.main(["--once"])
+
+    assert code == 3, "a billing problem is not the same exit as success"
+    assert "ai.studio" in caplog.text
+    assert "Traceback" not in caplog.text
+
+
+def test_an_ordinary_failure_still_gets_a_traceback(tmp_path, monkeypatch, caplog):
+    """Anything we have not diagnosed should keep its stack trace."""
+    import app.main as main_module
+
+    monkeypatch.setenv("GOOGLE_API_KEY", "x")
+    monkeypatch.setattr(main_module, "load_dotenv", lambda *a, **k: None)
+    monkeypatch.setattr(main_module, "load_config", lambda path: config_at(tmp_path))
+    monkeypatch.setattr(main_module, "run_today",
+                        lambda config, today: (_ for _ in ()).throw(RuntimeError("something odd")))
+
+    code = main_module.main(["--once"])
+
+    assert code == 0, "an odd failure should not stop tomorrow's run"
+    assert "something odd" in caplog.text
+
+
 def test_a_fresh_install_has_not_run_today(tmp_path):
     store = Store(tmp_path / "seen.db")
 

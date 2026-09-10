@@ -16,7 +16,7 @@ from datetime import date
 from typing import Protocol
 
 from app.config import RunConfig
-from app.pacing import DailyQuotaExhausted, Pacer
+from app.pacing import AccountBlocked, DailyQuotaExhausted, Pacer, RateLimitKind, classify_rate_limit
 from app.report import Failure, Judged, Rejected, RunReport
 from app.store import Store
 from core.logic import card_rejection_reason, rejection_reason
@@ -84,8 +84,18 @@ class Pipeline:
         fresh = [card for card in cards if self.store.is_new(card.offer_id)]
         survivors = self._drop_by_card(fresh, report)
         survivors = self._settle_reposts(survivors, report)
-        candidates = self._describe_and_score(survivors, report, budget)
-        self._judge_finalists(candidates, report, budget)
+
+        try:
+            candidates = self._describe_and_score(survivors, report, budget)
+            self._judge_finalists(candidates, report, budget)
+        except AccountBlocked as blocked:
+            # Nothing will answer and nothing will change by waiting, so stop
+            # rather than repeating the refusal for every remaining vacancy.
+            log.error("stopping the run: %s", blocked)
+            report.failures.append(Failure(
+                title="whole run", url="https://ai.studio/projects", error=str(blocked),
+            ))
+            return report
 
         self.store.mark_run(day)
         return report
@@ -220,16 +230,17 @@ class Pipeline:
             return exhausted
 
         try:
-            result = call(*args)
+            return call(*args)
         except Exception as error:
+            if classify_rate_limit(error) is RateLimitKind.ACCOUNT:
+                raise AccountBlocked(f"the API refused everything: {error}") from error
             log.warning("%s failed: %s", model, error)
             return error
         finally:
-            # A failed request still counted against the quota.
+            # A refused request still counted against the quota, so account for
+            # it whether the call returned, failed, or aborted the run.
             self.pacer.record(model)
             budget.spend()
-
-        return result
 
     def _replace_verdict(self, report: RunReport, card: VacancyCard, verdict: MatchResult) -> None:
         for index, item in enumerate(report.judged):

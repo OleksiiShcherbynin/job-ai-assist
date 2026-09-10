@@ -209,6 +209,38 @@ def test_the_call_budget_stops_the_run_before_the_quota_does(tmp_path):
     assert report.failures, "vacancies left unprocessed must be named"
 
 
+DEPLETED = ("429 RESOURCE_EXHAUSTED. {'error': {'message': 'Your prepayment credits "
+            "are depleted. Please go to AI Studio at https://ai.studio/projects'}}")
+
+
+class BrokenAccountLLM(FakeLLM):
+    def extract_vacancy(self, text):
+        self.extracted.append(text)
+        raise RuntimeError(DEPLETED)
+
+
+def test_a_dead_account_stops_the_run_instead_of_retrying_every_vacancy(tmp_path):
+    """Observed live: every model answers 429 for depleted credits. Carrying on
+    turned 20 vacancies into hundreds of futile requests."""
+    cards = [card(f"O{n}") for n in range(1, 6)]
+    pipeline, _, _, llm = build(tmp_path, cards, llm=BrokenAccountLLM())
+
+    report = pipeline.run(DAY)
+
+    assert len(llm.extracted) == 1, "it must give up after the first refusal"
+    assert any("credits" in failure.error.lower() or "account" in failure.error.lower()
+               for failure in report.failures)
+
+
+def test_a_dead_account_does_not_mark_the_day_as_done(tmp_path):
+    """Tomorrow's run would otherwise skip a day that produced nothing."""
+    pipeline, _, store, _ = build(tmp_path, [card("O1")], llm=BrokenAccountLLM())
+
+    pipeline.run(DAY)
+
+    assert store.last_run_date() is None
+
+
 def test_the_run_is_recorded_so_today_does_not_repeat(tmp_path):
     pipeline, _, store, _ = build(tmp_path, [card("O1")])
 
