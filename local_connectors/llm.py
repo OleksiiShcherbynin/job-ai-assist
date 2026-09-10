@@ -11,6 +11,8 @@ from core.models import MatchResult
 
 logging.getLogger("instructor").setLevel(logging.CRITICAL)
 
+_TIMEOUT_MS = int(os.environ.get("GEMINI_TIMEOUT_MS", 90_000))
+
 _gemini = None
 
 
@@ -25,7 +27,11 @@ def _get_gemini() -> instructor.Instructor:
         _gemini = instructor.from_genai(
             genai.Client(
                 api_key=api_key,
-                http_options=types.HttpOptions(timeout=30_000),
+                # Nobody is waiting on this run, and giving up early is not free:
+                # a request we abandon may already have been served and charged
+                # against the daily quota. At 30s a live run timed out on 10 of
+                # 42 calls and took 700 seconds; the retries were the cost.
+                http_options=types.HttpOptions(timeout=_TIMEOUT_MS),
             ),
         )
 

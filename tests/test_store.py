@@ -65,6 +65,50 @@ def test_a_recorded_verdict_can_be_read_back(store):
     assert verdict.status == "scored-final"
 
 
+def test_a_second_verdict_replaces_the_first(store):
+    """Observed on a live run: the rough score was recorded, the final judge
+    then scored 98 -> 78 with the whole resume in hand, and the store kept the
+    rough number. A repost would have inherited the wrong verdict."""
+    store.record(card(), status="scored-rough", score=98,
+                 reasons=["looks close"], reasons_ru=["выглядит близко"])
+
+    store.record(card(), status="scored-final", score=78,
+                 reasons=["first-year student"], reasons_ru=["студент первого курса"])
+
+    verdict = store.verdict("O5000001")
+    assert verdict.score == 78
+    assert verdict.status == "scored-final"
+    assert verdict.reasons == ["first-year student"]
+    assert verdict.reasons_ru == ["студент первого курса"]
+
+
+def test_the_posting_text_is_not_lost_when_a_later_write_omits_it(store):
+    """The final judgement carries no detail_text; re-scoring later without
+    re-scraping depends on the stored text surviving."""
+    store.record(card(), status="scored-rough", score=50, detail_text="the whole posting")
+
+    store.record(card(), status="scored-final", score=78)
+
+    row = store._connection.execute(
+        "SELECT detail_text FROM vacancies WHERE offer_id = 'O5000001'"
+    ).fetchone()
+    assert row["detail_text"] == "the whole posting"
+
+
+def test_first_seen_survives_a_later_write(store):
+    store.record(card(), status="scored-rough", score=50,
+                 moment=datetime(2026, 9, 1, tzinfo=timezone.utc))
+
+    store.record(card(), status="scored-final", score=78,
+                 moment=datetime(2026, 9, 10, tzinfo=timezone.utc))
+
+    row = store._connection.execute(
+        "SELECT first_seen, last_seen FROM vacancies WHERE offer_id = 'O5000001'"
+    ).fetchone()
+    assert row["first_seen"].startswith("2026-09-01")
+    assert row["last_seen"].startswith("2026-09-10")
+
+
 def test_reading_a_verdict_that_was_never_recorded_gives_nothing(store):
     assert store.verdict("O9999999") is None
 

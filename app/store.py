@@ -111,8 +111,12 @@ class Store:
         moment: datetime | None = None,
     ) -> None:
         now = (moment or datetime.now(timezone.utc)).isoformat()
-        reasons_json = json.dumps(
-            {"en": reasons or [], "ru": reasons_ru or []}, ensure_ascii=False
+        # None means "this write says nothing about the reasons", which the
+        # upsert below preserves. An empty list means "there are none".
+        reasons_json = (
+            json.dumps({"en": reasons or [], "ru": reasons_ru or []}, ensure_ascii=False)
+            if reasons is not None or reasons_ru is not None
+            else None
         )
         self._connection.execute(
             """
@@ -121,9 +125,19 @@ class Store:
                                    card_json, detail_text, vacancy_json, score, reasons_json)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(offer_id) DO UPDATE SET
-                last_seen = excluded.last_seen,
-                status    = excluded.status,
-                reason    = excluded.reason
+                last_seen    = excluded.last_seen,
+                status       = excluded.status,
+                reason       = excluded.reason,
+                card_json    = excluded.card_json,
+                -- The final judgement arrives as a second write and must replace
+                -- the rough verdict; leaving it out kept 98 where the judge said
+                -- 78, and a repost would have inherited the wrong number.
+                score        = COALESCE(excluded.score, vacancies.score),
+                reasons_json = COALESCE(excluded.reasons_json, vacancies.reasons_json),
+                -- That write carries no posting text, and re-scoring later
+                -- without re-scraping depends on the stored copy surviving.
+                detail_text  = COALESCE(excluded.detail_text, vacancies.detail_text),
+                vacancy_json = COALESCE(excluded.vacancy_json, vacancies.vacancy_json)
             """,
             (
                 card.offer_id,
