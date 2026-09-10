@@ -8,7 +8,7 @@ from core.models import (
 )
 
 
-def _strip_accents(s: str) -> str:
+def strip_accents(s: str) -> str:
     """Remove diacritics: 'študent' -> 'student', 'príležitosť' -> 'prilezitost'."""
     nfkd = unicodedata.normalize("NFKD", s)
     return "".join(ch for ch in nfkd if not unicodedata.combining(ch))
@@ -22,7 +22,7 @@ def _searchable_text(v: Vacancy) -> str:
         v.company or "",
         v.additional_info or "",
     ]
-    return _strip_accents(" ".join(parts).lower())
+    return strip_accents(" ".join(parts).lower())
 
 
 def _title_text(v: Vacancy) -> str:
@@ -33,7 +33,7 @@ def _title_text(v: Vacancy) -> str:
     or reassure the reader ('nemusis byt senior'), and matching them there
     rejects the junior roles they are advertising.
     """
-    return _strip_accents((v.role or "").lower())
+    return strip_accents((v.role or "").lower())
 
 
 def rejection_reason(
@@ -45,7 +45,7 @@ def rejection_reason(
     title = _title_text(v)
 
     for word in prefs.deal_breakers:
-        needle = _strip_accents(word.lower())
+        needle = strip_accents(word.lower())
         if needle in title:
             return f"deal-breaker: {word!r}"
 
@@ -56,7 +56,7 @@ def rejection_reason(
         return f"salary range {v.salary_max} < minimum {prefs.min_salary}"
 
     for skill in prefs.must_have:
-        needle = _strip_accents(skill.lower())
+        needle = strip_accents(skill.lower())
         if needle not in text:
             return f"no mandatory: {skill!r}"
 

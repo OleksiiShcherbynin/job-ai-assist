@@ -52,6 +52,26 @@ class SearchPreferences(BaseModel):
     deal_breakers: list[str] = Field(default_factory=list)
 
 
+class VacancyCard(BaseModel):
+    """What a search-listing row shows, before the posting itself is fetched.
+
+    Enough to reject a vacancy without spending a page load or an LLM call:
+    Profesia states salary on every card, since Slovak law requires it.
+    """
+
+    offer_id: str
+    title: str
+    url: str
+    company: str | None = None
+    location: str | None = None
+    salary_text: str | None = None
+    salary_min: float | None = None
+    salary_max: float | None = None
+    salary_period: str | None = Field(None, description="'hour' or 'month'; the two are not comparable.")
+    allows_home_office: bool = False
+    posted_label: str | None = Field(None, description="Freshness as shown, e.g. 'Včera'.")
+
+
 class Vacancy(BaseModel):
     company: str | None = None
     role: str | None = None
