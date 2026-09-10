@@ -27,9 +27,10 @@ def report(**overrides) -> RunReport:
 def two_scored() -> list[Judged]:
     return [
         Judged(card=card("O5000001", "Junior Data Engineer"), score=87,
-               reasons=["stack matches", "student welcome"], stage="final"),
+               reasons=["stack matches", "student welcome"],
+               reasons_ru=["стек совпадает", "готовы брать студента"], stage="final"),
         Judged(card=card("O5000002", "Student Data Analyst"), score=54,
-               reasons=["adjacent field"], stage="rough"),
+               reasons=["adjacent field"], reasons_ru=["смежная область"], stage="rough"),
     ]
 
 
@@ -97,3 +98,41 @@ def test_a_day_with_nothing_new_still_produces_a_readable_report():
 
     assert "2026-09-10" in text
     assert text.strip(), "an empty day must still say something"
+
+
+def test_the_russian_report_uses_the_russian_reasons(two_scored):
+    text = render_markdown(report(judged=two_scored), min_score=40, language="ru")
+
+    assert "стек совпадает" in text
+    assert "stack matches" not in text
+
+
+def test_the_english_report_uses_the_english_reasons(two_scored):
+    text = render_markdown(report(judged=two_scored), min_score=40, language="en")
+
+    assert "stack matches" in text
+    assert "стек совпадает" not in text
+
+
+def test_the_russian_report_is_russian_throughout(two_scored):
+    """A report half in English reads worse than one consistently in either."""
+    rejected = [Rejected(card=card("O5000009", "Senior Architect"), reason="deal-breaker")]
+    text = render_markdown(report(judged=two_scored, rejected=rejected), min_score=40, language="ru")
+
+    assert "Open the posting" not in text
+    assert "Filtered out" not in text
+    assert "Вакансии" in text
+
+
+def test_russian_falls_back_to_english_when_the_model_gave_only_one_language():
+    """Better a reason in the wrong language than a vacancy with no reasons."""
+    only_english = [Judged(card=card(), score=80, reasons=["stack matches"], reasons_ru=[], stage="final")]
+
+    text = render_markdown(report(judged=only_english), min_score=40, language="ru")
+
+    assert "stack matches" in text
+
+
+def test_an_unknown_language_is_refused_rather_than_silently_english():
+    with pytest.raises(ValueError):
+        render_markdown(report(), min_score=40, language="sk")

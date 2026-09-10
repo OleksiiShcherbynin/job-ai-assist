@@ -73,12 +73,21 @@ def _text_of(row, selector: str) -> str | None:
 
 
 def _salary_label(row) -> str | None:
-    """The pay label, picked by content: a card carries other labels too."""
-    for element in row.select('[class*="label"]'):
-        text = element.get_text(" ", strip=True)
-        if "EUR" in text:
-            return text
-    return None
+    """The pay label, picked by content: a card carries other labels too.
+
+    The innermost match wins. Outer label containers can wrap the pay together
+    with a neighbouring badge ('Можливість для людей з України'), and that text
+    would otherwise end up in the report as part of the salary.
+    """
+    candidates = [
+        element for element in row.select('[class*="label"]')
+        if "EUR" in element.get_text(" ", strip=True)
+    ]
+    if not candidates:
+        return None
+
+    innermost = min(candidates, key=lambda element: len(element.get_text(" ", strip=True)))
+    return innermost.get_text(" ", strip=True)
 
 
 def _canonical_url(url: str) -> str:

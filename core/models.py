@@ -101,7 +101,13 @@ class Vacancy(BaseModel):
 
 class MatchResult(BaseModel):
     score: int = Field(ge=0, le=100)
-    reasons: list[str] = Field(default_factory=list)
+    reasons: list[str] = Field(default_factory=list, description="Reasons in English.")
+    reasons_ru: list[str] = Field(
+        default_factory=list,
+        description="The same reasons in Russian. Produced in the same call as the "
+        "English ones, so a second report costs output tokens rather than another "
+        "request against the judge's small daily quota.",
+    )
 
 
 class Attachment(BaseModel):
