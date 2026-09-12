@@ -1,7 +1,12 @@
 pydantic==2.13.4
 google-genai==2.10.0
-instructor==1.15.4
+# The google-genai extra pulls in jsonref, which instructor needs to build a
+# Gemini structured-output schema. Bare `instructor` installs and imports fine
+# and then fails at the first call — it only showed up in a clean container,
+# because the host had jsonref by accident from another package.
+instructor[google-genai]==1.15.4
 httpx==0.28.1
 beautifulsoup4==4.15.0
 pypdf==6.10.2
 python-dotenv==1.2.2
+tzdata==2026.3

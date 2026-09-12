@@ -26,5 +26,9 @@ ENV/
 .vscode/
 .idea/
 
-# Scraped data cache
-fixtures/
+# Scraped data cache (project root only — tests/fixtures/ is tracked on purpose)
+/fixtures/
+
+# Generated reports and run state
+reports/
+state/

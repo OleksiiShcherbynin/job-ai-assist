@@ -1,0 +1,30 @@
+services:
+  daily-run:
+    build: .
+    # Comes up with Docker Desktop, which comes up at login. The container is a
+    # long-lived loop that checks "have I run today?" rather than a one-shot job,
+    # so this policy starts it rather than restarting it forever.
+    restart: unless-stopped
+
+    env_file: .env
+
+    environment:
+      # Without this the container is on UTC: at 01:00 in Bratislava it would
+      # still think it is yesterday, and both the run marker and the report
+      # filename would land on the wrong day.
+      TZ: Europe/Bratislava
+
+    volumes:
+      # The resume is personal data and the run only ever reads it.
+      - ./data:/app/data:ro
+      # Editing criteria on the host takes effect on the next restart.
+      - ./config.toml:/app/config.toml:ro
+      # Must outlive the container: this is what stops vacancies being paid for
+      # twice and what remembers the quota already spent today.
+      - ./state:/app/state
+      - ./reports:/app/reports
+
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL

@@ -51,6 +51,36 @@ class SearchPreferences(BaseModel):
     must_have: list[str] = Field(default_factory=list)
     deal_breakers: list[str] = Field(default_factory=list)
 
+    # Card-level filtering. Pay floors are per period because listings mix
+    # hourly student rates with monthly salaries; one number cannot judge both.
+    min_salary_month: float | None = None
+    min_salary_hour: float | None = None
+    require_title_keywords: list[str] = Field(
+        default_factory=list,
+        description="If set, a title must contain one of these. Off by default: a "
+        "weak match only scores low, while a wrongly dropped one is never seen.",
+    )
+
+
+class VacancyCard(BaseModel):
+    """What a search-listing row shows, before the posting itself is fetched.
+
+    Enough to reject a vacancy without spending a page load or an LLM call:
+    Profesia states salary on every card, since Slovak law requires it.
+    """
+
+    offer_id: str
+    title: str
+    url: str
+    company: str | None = None
+    location: str | None = None
+    salary_text: str | None = None
+    salary_min: float | None = None
+    salary_max: float | None = None
+    salary_period: str | None = Field(None, description="'hour' or 'month'; the two are not comparable.")
+    allows_home_office: bool = False
+    posted_label: str | None = Field(None, description="Freshness as shown, e.g. 'Včera'.")
+
 
 class Vacancy(BaseModel):
     company: str | None = None
@@ -71,7 +101,13 @@ class Vacancy(BaseModel):
 
 class MatchResult(BaseModel):
     score: int = Field(ge=0, le=100)
-    reasons: list[str] = Field(default_factory=list)
+    reasons: list[str] = Field(default_factory=list, description="Reasons in English.")
+    reasons_ru: list[str] = Field(
+        default_factory=list,
+        description="The same reasons in Russian. Produced in the same call as the "
+        "English ones, so a second report costs output tokens rather than another "
+        "request against the judge's small daily quota.",
+    )
 
 
 class Attachment(BaseModel):
