@@ -30,7 +30,11 @@ desired_roles = ["junior", "student", "brigádnik", "trainee", "analytik", "data
 # either), "English C1"/"English C2" (never written that way — real ads say
 # "anglický jazyk B1/B2", and C1/C2 English appears in 0 of 20).
 # "manager" is deliberately absent: a PM role is among the picked matches.
-deal_breakers = ["senior", "medior", "architect"]
+#
+# Entries match the START of a word, so one "lektor" covers lektor/lektora/
+# lektorka without also hitting "kolektor dát" — which the "data" search term
+# makes a realistic title.
+deal_breakers = ["senior", "medior", "architect", "lektor", "ucitel"]
 
 # Empty on purpose. No technology appears in more than 35% of the reference set
 # (SQL 7/20, AI 7/20, Python 5/20), so any required skill would cut the majority

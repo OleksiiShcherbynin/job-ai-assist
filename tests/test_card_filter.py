@@ -35,6 +35,44 @@ def test_deal_breaker_matching_ignores_slovak_diacritics(prefs):
     assert card_rejection_reason(card(title="Vedúci vývojár"), prefs) is not None
 
 
+def test_a_deal_breaker_matches_inflected_forms(prefs):
+    """Slovak inflects: one entry has to cover lektor/lektora/lektorka."""
+    prefs.deal_breakers = ["lektor"]
+
+    for title in ("Lektor programovania", "Lektorka v centre vzdelávania", "Hľadáme lektora"):
+        assert card_rejection_reason(card(title=title), prefs) is not None, title
+
+
+def test_a_deal_breaker_does_not_match_inside_another_word(prefs):
+    """'lektor' sits inside 'kolektor'. A data-collector role must survive a
+    ban on teaching, the same way a junior ad survives a ban on 'senior'."""
+    prefs.deal_breakers = ["lektor"]
+
+    assert card_rejection_reason(card(title="Kolektor dát"), prefs) is None
+    assert card_rejection_reason(card(title="Selektor produktov"), prefs) is None
+
+
+@pytest.mark.parametrize("title", [
+    "IT Analytik Medior",
+    "Implementation Engineer (Mid/Senior)",
+    "Lead Architect (Solution Architect DevOps Technologies)",
+    "Medior/Senior Linux OPS Administrátor/ka",
+    "Mzdový účtovník/účtovníčka – Senior | Bratislava",
+    "Product Manager, Senior - Insurance Services (f/m)",
+    "Senior Biznis Konzultant (Consulting & Thought Leadership)",
+    "Senior Data Analyst – BI & Reporting",
+    "Senior Network Engineer / Senior sieťový technik (ISP)",
+    "Software engineer full-stack (medior/senior)",
+    "Technical Architect (.NET, .NET Core, TOGAF)",
+])
+def test_the_titles_rejected_on_a_live_run_are_still_rejected(prefs, title):
+    """Word-boundary matching must not quietly let seniors back in: these are
+    the eleven the filter caught on 2026-09-11, with that run's own list."""
+    prefs.deal_breakers = ["senior", "medior", "architect"]
+
+    assert card_rejection_reason(card(title=title), prefs) is not None
+
+
 def test_required_title_keywords_are_off_by_default(prefs):
     """Losing 'IT konzultant' costs more than letting a bad match through: a bad
     match just scores low, a missed one is never seen."""

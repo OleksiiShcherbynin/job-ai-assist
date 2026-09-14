@@ -1,3 +1,4 @@
+import re
 import unicodedata
 
 from core.models import (
@@ -25,6 +26,17 @@ def _searchable_text(v: Vacancy) -> str:
     return strip_accents(" ".join(parts).lower())
 
 
+def mentions(haystack: str, phrase: str) -> bool:
+    """True when the phrase begins a word in the (already normalized) haystack.
+
+    A prefix rather than a whole word, because Slovak inflects: one 'lektor'
+    entry has to cover lektor, lektora and lektorka. Anchoring it to a word
+    start is what keeps that same entry out of 'kolektor' — the trap 'senior'
+    already sprang once by matching the middle of a sentence.
+    """
+    return re.search(r"\b" + re.escape(phrase), haystack) is not None
+
+
 def _title_text(v: Vacancy) -> str:
     """Only the role title, normalized.
 
@@ -45,12 +57,12 @@ def card_rejection_reason(card: VacancyCard, prefs: SearchPreferences) -> str | 
     title = strip_accents(card.title.lower())
 
     for word in prefs.deal_breakers:
-        if strip_accents(word.lower()) in title:
+        if mentions(title, strip_accents(word.lower())):
             return f"deal-breaker: {word!r}"
 
     if prefs.require_title_keywords:
         wanted = [strip_accents(keyword.lower()) for keyword in prefs.require_title_keywords]
-        if not any(keyword in title for keyword in wanted):
+        if not any(mentions(title, keyword) for keyword in wanted):
             return f"title matches none of {prefs.require_title_keywords}"
 
     floor = {
@@ -85,8 +97,7 @@ def rejection_reason(
     title = _title_text(v)
 
     for word in prefs.deal_breakers:
-        needle = strip_accents(word.lower())
-        if needle in title:
+        if mentions(title, strip_accents(word.lower())):
             return f"deal-breaker: {word!r}"
 
     if prefs.work_formats and v.work_format and v.work_format not in prefs.work_formats:
@@ -95,6 +106,9 @@ def rejection_reason(
     if prefs.min_salary and v.salary_max and v.salary_max < prefs.min_salary:
         return f"salary range {v.salary_max} < minimum {prefs.min_salary}"
 
+    # must_have stays a plain substring search on purpose. It rejects when a
+    # skill is *absent*, so looser matching means fewer vacancies lost — the
+    # opposite trade-off to the deal-breakers above.
     for skill in prefs.must_have:
         needle = strip_accents(skill.lower())
         if needle not in text:
