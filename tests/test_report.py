@@ -2,7 +2,8 @@ from datetime import date
 
 import pytest
 
-from app.report import Failure, Judged, Rejected, RunReport, render_markdown
+from app.report import (TELEGRAM_LIMIT, Failure, Judged, Rejected, RunReport,
+                        render_markdown, render_telegram_summary, telegram_length)
 from core.models import VacancyCard
 
 
@@ -136,3 +137,84 @@ def test_russian_falls_back_to_english_when_the_model_gave_only_one_language():
 def test_an_unknown_language_is_refused_rather_than_silently_english():
     with pytest.raises(ValueError):
         render_markdown(report(), min_score=40, language="sk")
+
+
+def test_the_summary_leads_with_the_date_and_the_counts(two_scored):
+    text = render_telegram_summary(report(seen=99, judged=two_scored), min_score=40)
+
+    assert text.startswith("<b>Vacancies — 2026-09-10</b>")
+    assert "Seen 99" in text
+
+
+def test_the_summary_lists_only_strong_matches_best_first(two_scored):
+    text = render_telegram_summary(report(judged=list(reversed(two_scored))), min_score=40)
+    assert text.index("Junior Data Engineer") < text.index("Student Data Analyst")
+
+    only_top = render_telegram_summary(report(judged=two_scored), min_score=60)
+    assert "Student Data Analyst" not in only_top
+
+
+def test_a_summary_entry_links_the_title_and_shows_the_card_facts(two_scored):
+    text = render_telegram_summary(report(judged=two_scored), min_score=40)
+
+    assert '<b>87</b> · <a href="https://www.profesia.sk/praca/acme/O5000001">Junior Data Engineer</a>' in text
+    assert "ACME · home office · 1 300 - 1 600 EUR/mesiac" in text
+
+
+def test_the_summary_leaves_the_reasons_to_the_file(two_scored):
+    text = render_telegram_summary(report(judged=two_scored), min_score=40)
+
+    assert "stack matches" not in text
+
+
+def test_markup_in_a_title_cannot_break_the_message():
+    judged = [Judged(card=card(title="C++ & <Rust> Developer"), score=80, stage="final")]
+
+    text = render_telegram_summary(report(judged=judged), min_score=40)
+
+    assert "C++ &amp; &lt;Rust&gt; Developer" in text
+    assert "<Rust>" not in text
+
+
+def test_a_day_without_strong_matches_still_gets_a_message():
+    """Silence from the bot has to mean something is broken, never 'nothing today'."""
+    text = render_telegram_summary(report(seen=41), min_score=40)
+
+    assert "Nothing scored above the threshold today." in text
+
+
+def test_the_russian_summary_is_russian(two_scored):
+    text = render_telegram_summary(report(judged=two_scored), min_score=40, language="ru")
+
+    assert "Вакансии" in text
+    assert "Seen" not in text
+
+
+def test_a_long_day_is_cut_to_one_message_and_says_how_many_are_left():
+    judged = [
+        Judged(card=card(f"O{5000000 + number}", "Junior Data Engineer " + "x" * 150), score=90, stage="final")
+        for number in range(60)
+    ]
+
+    text = render_telegram_summary(report(judged=judged), min_score=40)
+
+    shown = text.count("<a href=")
+    assert telegram_length(text) <= TELEGRAM_LIMIT
+    assert 0 < shown < 60
+    assert f"…and {60 - shown} more — in the file" in text
+
+
+def test_a_day_that_fits_has_no_tail(two_scored):
+    text = render_telegram_summary(report(judged=two_scored), min_score=40)
+
+    assert "in the file" not in text
+
+
+def test_message_length_is_counted_the_way_telegram_counts_it():
+    assert telegram_length("я") == 1
+    assert telegram_length("😀") == 2
+
+
+def test_an_unknown_language_is_refused_for_the_summary_too():
+    with pytest.raises(ValueError):
+        render_telegram_summary(report(), min_score=40, language="sk")
