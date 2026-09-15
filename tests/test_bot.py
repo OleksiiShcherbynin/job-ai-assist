@@ -1,3 +1,4 @@
+import logging
 import threading
 from datetime import date
 
@@ -339,3 +340,79 @@ def test_a_message_without_text_gets_the_list_of_commands(messenger, store, repo
     make_bot(messenger, store, reports).handle_update(update)
 
     assert messenger.texts() == [TEXTS["ru"]["help"]]
+
+
+# --- listening -------------------------------------------------------------
+
+def listen(messenger, store, reports, **bot_options):
+    waits: list[float] = []
+    make_bot(messenger, store, reports, **bot_options).listen(messenger.stop, wait=waits.append)
+    return waits
+
+
+def test_updates_are_handled_and_the_offset_remembered(store, reports):
+    messenger = FakeMessenger(polls=[[message("/start", update_id=10)]])
+
+    listen(messenger, store, reports)
+
+    assert ("message", CHAT, CHOOSE_LANGUAGE, LANGUAGE_BUTTONS) in messenger.sent
+    assert store.get_state("update_offset") == "11"
+    assert messenger.offsets == [None, 11]
+
+
+def test_the_offset_survives_a_restart(store, reports):
+    """Otherwise a restart re-reads an old /start and answers it again."""
+    store.set_state("update_offset", "40")
+    messenger = FakeMessenger()
+
+    listen(messenger, store, reports)
+
+    assert messenger.offsets == [40]
+
+
+def test_a_rejected_token_stops_the_listener_with_one_clear_line(store, reports, caplog):
+    messenger = FakeMessenger(polls=[TelegramError("getUpdates: 401 Unauthorized", status=401),
+                                     [message("/start")]])
+
+    listen(messenger, store, reports)
+
+    assert messenger.sent == []
+    assert len(messenger.polls) == 1, "nothing is polled after a 401"
+    assert "TELEGRAM_BOT_TOKEN" in caplog.text
+
+
+def test_an_outage_backs_off_doubling_up_to_five_minutes(store, reports):
+    messenger = FakeMessenger(polls=[TelegramError("down")] * 9)
+
+    waits = listen(messenger, store, reports)
+
+    assert waits == [5, 10, 20, 40, 80, 160, 300, 300, 300]
+
+
+def test_telegrams_retry_after_is_respected(store, reports):
+    messenger = FakeMessenger(polls=[TelegramError("slow down", status=429, retry_after=30)])
+
+    assert listen(messenger, store, reports) == [30]
+
+
+def test_an_outage_is_logged_once_and_its_end_once(store, reports, caplog):
+    """Nobody watches this log live; a line per retry would bury everything else."""
+    caplog.set_level(logging.INFO, logger="telegram")
+    messenger = FakeMessenger(polls=[TelegramError("down")] * 3 + [[]])
+
+    listen(messenger, store, reports)
+
+    warnings = [record for record in caplog.records if record.levelname == "WARNING"]
+    assert len(warnings) == 1
+    assert "reachable again" in caplog.text
+
+
+def test_an_update_that_breaks_the_handler_is_skipped_not_retried(store, reports):
+    store.set_state("language", "ru")
+    messenger = FakeMessenger(polls=[[message("/today", update_id=3)]])
+    messenger.fail_on.add("message")
+
+    listen(messenger, store, reports)
+
+    assert store.get_state("update_offset") == "4"
+    assert messenger.offsets == [None, 4]

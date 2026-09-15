@@ -17,11 +17,19 @@ from pathlib import Path
 from app.report import LANGUAGES
 from app.store import Delivery, Store
 from core.ports import Messenger
+from local_connectors.telegram import TelegramError
 
 log = logging.getLogger("telegram")
 
 LANGUAGE_KEY = "language"
 OFFSET_KEY = "update_offset"
+
+POLL_SECONDS = 50
+"""How long Telegram may hold a getUpdates request open. Long polling answers
+a button within a second while costing one idle request a minute."""
+
+FIRST_BACKOFF_SECONDS = 5
+MAX_BACKOFF_SECONDS = 300
 
 NEED_LANGUAGE = "Сначала выберите язык: /start\nChoose a language first: /start"
 
@@ -102,6 +110,37 @@ class Bot:
             self._on_button(update["callback_query"])
         elif "message" in update:
             self._on_message(update["message"])
+
+    def listen(self, stop: threading.Event, wait: Callable[[float], object] | None = None) -> None:
+        """Answers commands until `stop` is set or the token is rejected."""
+        wait = wait or stop.wait
+        delay = 0
+        while not stop.is_set():
+            stored = self.store.get_state(OFFSET_KEY)
+            try:
+                updates = self.messenger.get_updates(int(stored) if stored else None, POLL_SECONDS)
+            except TelegramError as error:
+                if error.status == 401:
+                    log.error("Telegram rejected TELEGRAM_BOT_TOKEN — check .env. The bot stays off "
+                              "until the container is recreated; the daily run is not affected.")
+                    return
+                if delay == 0:
+                    log.warning("Telegram is unreachable; retrying quietly until it answers (%s)", error)
+                delay = min(max(delay * 2, FIRST_BACKOFF_SECONDS), MAX_BACKOFF_SECONDS)
+                wait(max(delay, error.retry_after or 0))
+                continue
+
+            if delay:
+                log.info("Telegram is reachable again")
+                delay = 0
+            for update in updates:
+                # Saved before handling: an update that keeps breaking the
+                # handler must not be fetched again forever.
+                self.store.set_state(OFFSET_KEY, str(update["update_id"] + 1))
+                try:
+                    self.handle_update(update)
+                except Exception:
+                    log.exception("could not answer a Telegram update")
 
     def _on_message(self, message: dict) -> None:
         sender = (message.get("chat") or {}).get("id")
