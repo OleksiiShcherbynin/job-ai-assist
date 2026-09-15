@@ -25,6 +25,16 @@ OFFSET_KEY = "update_offset"
 
 NEED_LANGUAGE = "Сначала выберите язык: /start\nChoose a language first: /start"
 
+CHOOSE_LANGUAGE = "Язык отчёта / Report language"
+LANGUAGE_BUTTONS = [("Русский", "lang:ru"), ("English", "lang:en")]
+
+SETUP = (
+    "Ваш chat id: <code>{chat_id}</code>\n"
+    "Добавьте в .env строку TELEGRAM_CHAT_ID={chat_id} и пересоздайте контейнер: docker compose up -d\n\n"
+    "Your chat id: <code>{chat_id}</code>\n"
+    "Add TELEGRAM_CHAT_ID={chat_id} to .env and recreate the container: docker compose up -d"
+)
+
 TEXTS = {
     "ru": {
         "chosen": "Язык: русский. Отчёт будет приходить сам после ежедневного прогона.",
@@ -86,6 +96,59 @@ class Bot:
     def language(self) -> str | None:
         value = self.store.get_state(LANGUAGE_KEY)
         return value if value in LANGUAGES else None
+
+    def handle_update(self, update: dict) -> None:
+        if "callback_query" in update:
+            self._on_button(update["callback_query"])
+        elif "message" in update:
+            self._on_message(update["message"])
+
+    def _on_message(self, message: dict) -> None:
+        sender = (message.get("chat") or {}).get("id")
+        command, _, argument = (message.get("text") or "").strip().partition(" ")
+        # From a group or the command menu, commands arrive as /start@BotName.
+        command = command.split("@", 1)[0]
+
+        if self.chat_id is None:
+            # Setup mode. The sender's own id is the only thing worth saying,
+            # and it tells a stranger nothing they did not already have.
+            if command == "/start" and sender is not None:
+                self._say(SETUP.format(chat_id=sender), chat_id=sender)
+            return
+        if sender != self.chat_id:
+            return
+
+        texts = TEXTS[self.language() or "ru"]
+        if command == "/start":
+            self._say(CHOOSE_LANGUAGE, buttons=LANGUAGE_BUTTONS)
+        elif command == "/today":
+            self.send_report(self.today())
+        elif command == "/report":
+            day = parse_report_date(argument, self.today())
+            if day is None:
+                self._say(texts["bad_date"])
+            else:
+                self.send_report(day)
+        else:
+            self._say(texts["help"])
+
+    def _on_button(self, query: dict) -> None:
+        message = query.get("message") or {}
+        if self.chat_id is None or (message.get("chat") or {}).get("id") != self.chat_id:
+            return
+
+        # Acknowledged first, whatever it was: otherwise the button keeps spinning.
+        self.messenger.answer_callback(query["id"])
+        data = query.get("data") or ""
+        language = data.removeprefix("lang:")
+        if not data.startswith("lang:") or language not in LANGUAGES:
+            return
+
+        self.store.set_state(LANGUAGE_KEY, language)
+        self.messenger.edit_message(self.chat_id, message["message_id"], TEXTS[language]["chosen"])
+        if self.wake is not None:
+            # Reports may have been queued waiting for exactly this.
+            self.wake.set()
 
     def deliver_pending(self) -> None:
         """Sends every queued report, oldest first.

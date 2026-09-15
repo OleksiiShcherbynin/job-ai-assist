@@ -3,7 +3,8 @@ from datetime import date
 
 import pytest
 
-from app.bot import NEED_LANGUAGE, TEXTS, Bot, parse_report_date
+from app.bot import (CHOOSE_LANGUAGE, LANGUAGE_BUTTONS, NEED_LANGUAGE, SETUP, TEXTS, Bot,
+                     parse_report_date)
 from app.store import Store
 from local_connectors.telegram import TelegramError
 
@@ -226,3 +227,115 @@ def test_a_request_before_choosing_a_language_asks_for_one(messenger, store, rep
     make_bot(messenger, store, reports).send_report(DAY)
 
     assert messenger.texts() == [NEED_LANGUAGE]
+
+
+# --- commands and buttons --------------------------------------------------
+
+def message(text, chat=CHAT, update_id=1):
+    return {"update_id": update_id, "message": {"message_id": 5, "chat": {"id": chat}, "text": text}}
+
+
+def button(data, chat=CHAT, update_id=2):
+    return {"update_id": update_id,
+            "callback_query": {"id": "q1", "data": data, "message": {"message_id": 9, "chat": {"id": chat}}}}
+
+
+def test_start_offers_the_language_buttons(messenger, store, reports):
+    make_bot(messenger, store, reports).handle_update(message("/start"))
+
+    assert messenger.sent == [("message", CHAT, CHOOSE_LANGUAGE, LANGUAGE_BUTTONS)]
+    assert LANGUAGE_BUTTONS == [("Русский", "lang:ru"), ("English", "lang:en")]
+
+
+def test_a_command_addressed_by_bot_name_still_works(messenger, store, reports):
+    make_bot(messenger, store, reports).handle_update(message("/start@JobAssistBot"))
+
+    assert messenger.sent == [("message", CHAT, CHOOSE_LANGUAGE, LANGUAGE_BUTTONS)]
+
+
+def test_a_stranger_gets_no_answer_and_changes_nothing(messenger, store, reports):
+    bot = make_bot(messenger, store, reports)
+
+    for update in (message("/start", chat=666), message("/today", chat=666), button("lang:ru", chat=666)):
+        bot.handle_update(update)
+
+    assert messenger.sent == []
+    assert store.get_state("language") is None
+
+
+def test_without_a_chat_id_start_tells_the_sender_their_own_id(messenger, store, reports):
+    make_bot(messenger, store, reports, chat_id=None).handle_update(message("/start", chat=555))
+
+    assert messenger.sent == [("message", 555, SETUP.format(chat_id=555), None)]
+    assert "TELEGRAM_CHAT_ID=555" in SETUP.format(chat_id=555)
+
+
+def test_without_a_chat_id_nothing_else_is_answered(messenger, store, reports):
+    bot = make_bot(messenger, store, reports, chat_id=None)
+
+    bot.handle_update(message("/today", chat=555))
+    bot.handle_update(button("lang:ru", chat=555))
+
+    assert messenger.sent == []
+
+
+def test_pressing_a_language_saves_it_confirms_and_wakes_the_loop(messenger, store, reports):
+    """Reports may already be queued; they should not wait for the next check."""
+    wake = threading.Event()
+
+    make_bot(messenger, store, reports, wake=wake).handle_update(button("lang:en"))
+
+    assert store.get_state("language") == "en"
+    assert messenger.sent == [("answer", "q1"), ("edit", CHAT, 9, TEXTS["en"]["chosen"])]
+    assert wake.is_set()
+
+
+def test_an_unknown_button_is_acknowledged_but_changes_nothing(messenger, store, reports):
+    make_bot(messenger, store, reports).handle_update(button("lang:sk"))
+
+    assert store.get_state("language") is None
+    assert messenger.sent == [("answer", "q1")]
+
+
+def test_today_sends_todays_report(messenger, store, reports):
+    store.set_state("language", "ru")
+    store.queue_delivery(TODAY, SUMMARIES)
+    write_report(reports, TODAY, "ru")
+
+    make_bot(messenger, store, reports).handle_update(message("/today"))
+
+    assert messenger.sent[-1] == ("document", CHAT, "2026-09-16.ru.md", None)
+
+
+def test_report_with_a_date_sends_that_day(messenger, store, reports):
+    store.set_state("language", "ru")
+    write_report(reports, DAY, "ru")
+
+    make_bot(messenger, store, reports).handle_update(message("/report 15.09"))
+
+    assert messenger.sent == [("document", CHAT, "2026-09-15.ru.md", TEXTS["ru"]["no_summary"])]
+
+
+@pytest.mark.parametrize("text", ["/report вчера", "/report"])
+def test_report_without_a_readable_date_explains_the_formats(messenger, store, reports, text):
+    store.set_state("language", "ru")
+
+    make_bot(messenger, store, reports).handle_update(message(text))
+
+    assert messenger.texts() == [TEXTS["ru"]["bad_date"]]
+
+
+def test_anything_else_gets_the_list_of_commands(messenger, store, reports):
+    store.set_state("language", "en")
+
+    make_bot(messenger, store, reports).handle_update(message("hello"))
+
+    assert messenger.texts() == [TEXTS["en"]["help"]]
+
+
+def test_a_message_without_text_gets_the_list_of_commands(messenger, store, reports):
+    update = {"update_id": 1, "message": {"message_id": 5, "chat": {"id": CHAT}, "sticker": {}}}
+
+    make_bot(messenger, store, reports).handle_update(update)
+
+    assert messenger.texts() == [TEXTS["ru"]["help"]]
