@@ -159,6 +159,7 @@ def extract[T: BaseModel](
     schema: type[T],
     instruction: str,
     model: str = EXTRACT_MODEL,
+    max_attempts: int = 4,
 ) -> T:
     system_prompt = (
         instruction + "\n\n"
@@ -172,6 +173,7 @@ def extract[T: BaseModel](
             {"role": "user", "content": _fence_untrusted(text)},
         ],
         model=model,
+        max_attempts=max_attempts,
     )
 
 
@@ -218,6 +220,7 @@ def score_match(
     profile_summary: str,
     prefs_summary: str,
     model: str | None = None,
+    max_attempts: int = 4,
 ) -> MatchResult:
     try:
         result = _call_with_fallback(
@@ -227,6 +230,7 @@ def score_match(
                 {"role": "user", "content": _fence_untrusted(vacancy_raw)},
             ],
             model=model or JUDGE_MODEL,
+            max_attempts=max_attempts,
         )
         result.score = max(0, min(100, result.score))
         return result
@@ -242,6 +246,7 @@ def judge_match(
     resume_text: str,
     prefs_summary: str,
     model: str | None = None,
+    max_attempts: int = 4,
 ) -> MatchResult:
     """Final judgement on a shortlisted vacancy: full resume, full posting.
 
@@ -256,6 +261,7 @@ def judge_match(
             {"role": "user", "content": _fence_untrusted(vacancy_raw)},
         ],
         model=model or JUDGE_MODEL,
+        max_attempts=max_attempts,
     )
     result.score = max(0, min(100, result.score))
     return result
