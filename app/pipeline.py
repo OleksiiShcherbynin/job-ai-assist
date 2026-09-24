@@ -95,6 +95,11 @@ class Pipeline:
             report.failures.append(Failure(
                 title="whole run", url="https://ai.studio/projects", error=str(blocked),
             ))
+            # Marked even though the run stopped early. An unmarked day is rerun
+            # fifteen minutes later by a run that finds every vacancy already
+            # recorded, writes a near-empty report over this one and sends that
+            # instead — which is exactly what happened on 2026-09-23.
+            self.store.mark_run(day)
             return report
 
         self.store.mark_run(day)

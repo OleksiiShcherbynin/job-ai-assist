@@ -232,13 +232,29 @@ def test_a_dead_account_stops_the_run_instead_of_retrying_every_vacancy(tmp_path
                for failure in report.failures)
 
 
-def test_a_dead_account_does_not_mark_the_day_as_done(tmp_path):
-    """Tomorrow's run would otherwise skip a day that produced nothing."""
+def test_a_stopped_run_still_marks_the_day_so_its_work_is_not_thrown_away(tmp_path):
+    """2026-09-23: the run stopped with 56 vacancies scored and left the day
+    unmarked, so the fifteen-minute loop ran it again. The second run found
+    everything already recorded, had one new vacancy to show, and wrote that
+    over the real report before sending it.
+
+    Whatever a stopped run managed to score is the day's best result. The
+    vacancies it never reached were never recorded either, so tomorrow picks
+    them up; a deliberate retry today is `--once --force`.
+    """
     pipeline, _, store, _ = build(tmp_path, [card("O1")], llm=BrokenAccountLLM())
 
     pipeline.run(DAY)
 
-    assert store.last_run_date() is None
+    assert store.last_run_date() == DAY
+
+
+def test_a_stopped_run_leaves_the_vacancies_it_never_reached_for_tomorrow(tmp_path):
+    pipeline, _, store, _ = build(tmp_path, [card("O1"), card("O2")], llm=BrokenAccountLLM())
+
+    pipeline.run(DAY)
+
+    assert store.is_new("O2") is True
 
 
 def test_the_run_is_recorded_so_today_does_not_repeat(tmp_path):
