@@ -1,14 +1,27 @@
+import logging
 from datetime import date
 
 import pytest
 
 from app.config import ModelQuota, RunConfig
-from app.main import already_ran_today, write_reports
+from app.main import (RedactingFilter, already_ran_today, install_redaction, telegram_settings,
+                      write_reports)
 from app.report import Judged, RunReport
 from app.store import Store
 from core.models import SearchPreferences, VacancyCard
 
 DAY = date(2026, 9, 10)
+
+
+@pytest.fixture(autouse=True)
+def no_telegram_unless_asked(monkeypatch):
+    """The developer's shell may carry real Telegram settings; tests never use them."""
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+    yield
+    for handler in logging.getLogger().handlers:
+        for installed in [f for f in handler.filters if isinstance(f, RedactingFilter)]:
+            handler.removeFilter(installed)
 
 
 def config_at(tmp_path) -> RunConfig:
@@ -142,3 +155,129 @@ def test_yesterdays_run_does_not_count_as_todays(tmp_path):
     store.mark_run(date(2026, 9, 9))
 
     assert already_ran_today(store, DAY) is False
+
+
+class RecordingMessenger:
+    def __init__(self, fail=False):
+        self.sent, self.fail = [], fail
+
+    def send_message(self, chat_id, html, buttons=None):
+        if self.fail:
+            raise RuntimeError("telegram is down")
+        self.sent.append(("message", chat_id, html))
+
+    def send_document(self, chat_id, path, caption=None):
+        self.sent.append(("document", chat_id, path.name))
+
+
+def with_telegram(monkeypatch, tmp_path, messenger, report, finished=True):
+    import app.main as main_module
+
+    monkeypatch.setenv("GOOGLE_API_KEY", "x")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "fake-token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "1001")
+    monkeypatch.setattr(main_module, "load_dotenv", lambda *a, **k: None)
+    monkeypatch.setattr(main_module, "load_config", lambda path: config_at(tmp_path))
+    monkeypatch.setattr(main_module, "TelegramClient", lambda token: messenger)
+    monkeypatch.setattr(main_module, "start_listener",
+                        lambda *a: pytest.fail("--once must not start the listener"))
+
+    def run(config, today):
+        write_reports(report, config)
+        if finished:
+            store = Store(config.state_path)
+            store.mark_run(report.day)
+            store.close()
+        return report
+
+    monkeypatch.setattr(main_module, "run_today", run)
+    store = Store(config_at(tmp_path).state_path)
+    store.set_state("language", "en")
+    store.close()
+    return main_module
+
+
+def test_a_finished_run_reaches_telegram_as_summary_and_file(tmp_path, monkeypatch, report):
+    messenger = RecordingMessenger()
+    main_module = with_telegram(monkeypatch, tmp_path, messenger, report)
+
+    assert main_module.main(["--once"]) == 0
+
+    assert messenger.sent[0][:2] == ("message", 1001)
+    assert "Junior Data Engineer" in messenger.sent[0][2]
+    assert messenger.sent[1] == ("document", 1001, "2026-09-10.en.md")
+
+
+def test_an_unfinished_run_is_not_queued(tmp_path, monkeypatch, report):
+    """A run cut short is not marked done and repeats every check; queueing it
+    would send a message every fifteen minutes."""
+    messenger = RecordingMessenger()
+    main_module = with_telegram(monkeypatch, tmp_path, messenger, report, finished=False)
+
+    main_module.main(["--once"])
+
+    assert messenger.sent == []
+
+
+def test_a_telegram_failure_does_not_fail_the_run(tmp_path, monkeypatch, report, caplog):
+    messenger = RecordingMessenger(fail=True)
+    main_module = with_telegram(monkeypatch, tmp_path, messenger, report)
+
+    assert main_module.main(["--once"]) == 0
+    assert "will retry" in caplog.text
+    assert len(Store(config_at(tmp_path).state_path).pending_deliveries()) == 1
+
+
+def test_without_a_token_the_bot_stays_off(tmp_path, monkeypatch, report):
+    import app.main as main_module
+
+    monkeypatch.setenv("GOOGLE_API_KEY", "x")
+    monkeypatch.setattr(main_module, "load_dotenv", lambda *a, **k: None)
+    monkeypatch.setattr(main_module, "load_config", lambda path: config_at(tmp_path))
+    monkeypatch.setattr(main_module, "TelegramClient", lambda token: pytest.fail("no token, no client"))
+    monkeypatch.setattr(main_module, "run_today", lambda config, today: report)
+
+    assert main_module.main(["--once"]) == 0
+    assert Store(config_at(tmp_path).state_path).pending_deliveries() == []
+
+
+def test_httpx_request_lines_are_kept_out_of_the_log(tmp_path, monkeypatch, report):
+    """They carry the bot token in the URL, and long polling adds one a minute."""
+    import app.main as main_module
+
+    monkeypatch.setenv("GOOGLE_API_KEY", "x")
+    monkeypatch.setattr(main_module, "load_dotenv", lambda *a, **k: None)
+    monkeypatch.setattr(main_module, "load_config", lambda path: config_at(tmp_path))
+    monkeypatch.setattr(main_module, "run_today", lambda config, today: report)
+
+    main_module.main(["--once"])
+
+    assert logging.getLogger("httpx").level == logging.WARNING
+
+
+def test_the_token_is_masked_in_every_log_line_and_traceback(caplog):
+    install_redaction("fake-token")
+    logger = logging.getLogger("anything")
+
+    logger.error("GET https://api.telegram.org/bot%s/getUpdates", "fake-token")
+    try:
+        raise RuntimeError("failed at /botfake-token/sendMessage")
+    except RuntimeError:
+        logger.exception("boom")
+
+    assert "fake-token" not in caplog.text
+    assert "/bot***/getUpdates" in caplog.text
+
+
+@pytest.mark.parametrize("raw_chat, expected", [("1001", 1001), ("-100200", -100200), ("", None), ("abc", None)])
+def test_telegram_settings_come_from_the_environment(monkeypatch, raw_chat, expected):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", " fake-token ")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", raw_chat)
+
+    assert telegram_settings() == ("fake-token", expected)
+
+
+def test_an_empty_token_means_no_bot(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "")
+
+    assert telegram_settings() == (None, None)

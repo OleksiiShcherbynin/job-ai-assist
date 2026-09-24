@@ -16,6 +16,12 @@ VACANCY_INSTRUCTION = (
 )
 
 
+SINGLE_ATTEMPT = 1
+"""One request per call. Retrying inside the client hides the extra requests
+from the pacer, which is how a judge limited to five a minute was asked six
+times; the pipeline retries instead, and it paces."""
+
+
 class GeminiJudge:
     def __init__(self, config: RunConfig, profile_summary: str, prefs_summary: str, resume_text: str) -> None:
         self._config = config
@@ -24,7 +30,8 @@ class GeminiJudge:
         self._resume_text = resume_text
 
     def extract_vacancy(self, text: str) -> Vacancy:
-        return extract(text, Vacancy, VACANCY_INSTRUCTION, model=self._config.models.extract)
+        return extract(text, Vacancy, VACANCY_INSTRUCTION, model=self._config.models.extract,
+                       max_attempts=SINGLE_ATTEMPT)
 
     def rough_score(self, vacancy: Vacancy, card: VacancyCard) -> MatchResult:
         return score_match(
@@ -32,6 +39,7 @@ class GeminiJudge:
             self._profile_summary,
             self._prefs_summary,
             model=self._config.models.rough_score,
+            max_attempts=SINGLE_ATTEMPT,
         )
 
     def final_judge(self, vacancy: Vacancy, card: VacancyCard) -> MatchResult:
@@ -40,4 +48,5 @@ class GeminiJudge:
             self._resume_text,
             self._prefs_summary,
             model=self._config.models.final_judge,
+            max_attempts=SINGLE_ATTEMPT,
         )

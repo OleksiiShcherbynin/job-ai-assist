@@ -25,6 +25,10 @@ from core.ports import VacancySource
 
 log = logging.getLogger(__name__)
 
+TRANSIENT_ATTEMPTS = 3
+"""Attempts per call when the limit is a busy minute. Three because the judge
+has twenty calls a day: waiting one vacancy out forever would spend them all."""
+
 
 class VacancyJudge(Protocol):
     """The three model-backed steps, kept behind one seam so tests never call a
@@ -95,6 +99,11 @@ class Pipeline:
             report.failures.append(Failure(
                 title="whole run", url="https://ai.studio/projects", error=str(blocked),
             ))
+            # Marked even though the run stopped early. An unmarked day is rerun
+            # fifteen minutes later by a run that finds every vacancy already
+            # recorded, writes a near-empty report over this one and sends that
+            # instead — which is exactly what happened on 2026-09-23.
+            self.store.mark_run(day)
             return report
 
         self.store.mark_run(day)
@@ -223,24 +232,34 @@ class Pipeline:
             )
 
     def _spend(self, model: str, budget: _Budget, call, *args):
-        """Pace, call, account. Returns the result or the exception to report."""
-        try:
-            self.pacer.wait_for_slot(model)
-        except DailyQuotaExhausted as exhausted:
-            return exhausted
+        """Pace, call, account. Returns the result or the exception to report.
 
-        try:
-            return call(*args)
-        except Exception as error:
-            if classify_rate_limit(error) is RateLimitKind.ACCOUNT:
-                raise AccountBlocked(f"the API refused everything: {error}") from error
-            log.warning("%s failed: %s", model, error)
-            return error
-        finally:
-            # A refused request still counted against the quota, so account for
-            # it whether the call returned, failed, or aborted the run.
-            self.pacer.record(model)
-            budget.spend()
+        A per-minute refusal is retried here rather than inside the client,
+        because only this loop goes through the pacer: retries the pacer cannot
+        see are how one judge call became four requests against a limit of five.
+        """
+        for attempt in range(1, TRANSIENT_ATTEMPTS + 1):
+            try:
+                self.pacer.wait_for_slot(model)
+            except DailyQuotaExhausted as exhausted:
+                return exhausted
+
+            try:
+                return call(*args)
+            except Exception as error:
+                kind = classify_rate_limit(error)
+                if kind is RateLimitKind.ACCOUNT:
+                    raise AccountBlocked(f"the API refused everything: {error}") from error
+                if kind is RateLimitKind.TRANSIENT and attempt < TRANSIENT_ATTEMPTS:
+                    log.info("%s is busy, waiting for a free slot (attempt %d)", model, attempt)
+                    continue
+                log.warning("%s failed: %s", model, error)
+                return error
+            finally:
+                # A refused request still counted against the quota, so account
+                # for it whether the call returned, failed, or aborted the run.
+                self.pacer.record(model)
+                budget.spend()
 
     def _replace_verdict(self, report: RunReport, card: VacancyCard, verdict: MatchResult) -> None:
         for index, item in enumerate(report.judged):

@@ -232,13 +232,76 @@ def test_a_dead_account_stops_the_run_instead_of_retrying_every_vacancy(tmp_path
                for failure in report.failures)
 
 
-def test_a_dead_account_does_not_mark_the_day_as_done(tmp_path):
-    """Tomorrow's run would otherwise skip a day that produced nothing."""
+def test_a_stopped_run_still_marks_the_day_so_its_work_is_not_thrown_away(tmp_path):
+    """2026-09-23: the run stopped with 56 vacancies scored and left the day
+    unmarked, so the fifteen-minute loop ran it again. The second run found
+    everything already recorded, had one new vacancy to show, and wrote that
+    over the real report before sending it.
+
+    Whatever a stopped run managed to score is the day's best result. The
+    vacancies it never reached were never recorded either, so tomorrow picks
+    them up; a deliberate retry today is `--once --force`.
+    """
     pipeline, _, store, _ = build(tmp_path, [card("O1")], llm=BrokenAccountLLM())
 
     pipeline.run(DAY)
 
-    assert store.last_run_date() is None
+    assert store.last_run_date() == DAY
+
+
+def test_a_stopped_run_leaves_the_vacancies_it_never_reached_for_tomorrow(tmp_path):
+    pipeline, _, store, _ = build(tmp_path, [card("O1"), card("O2")], llm=BrokenAccountLLM())
+
+    pipeline.run(DAY)
+
+    assert store.is_new("O2") is True
+
+
+BUSY_MINUTE = (
+    "429 RESOURCE_EXHAUSTED. {'error': {'message': 'You exceeded your current quota, please "
+    "check your plan and billing details. Quota exceeded for metric: "
+    "generate_content_free_tier_requests, limit: 5 Please retry in 51.6s.', 'details': "
+    "[{'quotaId': 'GenerateRequestsPerMinutePerProjectPerModel-FreeTier'}, "
+    "{'retryDelay': '51s'}]}}"
+)
+
+
+class BusyJudgeLLM(FakeLLM):
+    """Refuses the judgement with a per-minute 429 `failures` times, then answers."""
+
+    def __init__(self, failures=1, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.failures = failures
+        self.attempts = 0
+
+    def final_judge(self, vacancy, card):
+        self.attempts += 1
+        if self.attempts <= self.failures:
+            raise RuntimeError(BUSY_MINUTE)
+        return super().final_judge(vacancy, card)
+
+
+def test_a_busy_minute_is_waited_out_rather_than_losing_the_judgement(tmp_path):
+    llm = BusyJudgeLLM(failures=1)
+    pipeline, _, store, _ = build(tmp_path, [card("O1")], llm=llm)
+
+    report = pipeline.run(DAY)
+
+    assert llm.attempts == 2
+    assert report.judged[0].stage == "final"
+    assert store.calls_used(JUDGE) == 2, "every attempt spends quota and must be counted"
+
+
+def test_a_minute_that_never_clears_gives_up_and_keeps_the_rough_score(tmp_path):
+    """Retrying forever would spend the judge's twenty daily calls on one vacancy."""
+    llm = BusyJudgeLLM(failures=99)
+    pipeline, _, store, _ = build(tmp_path, [card("O1")], llm=llm)
+
+    report = pipeline.run(DAY)
+
+    assert llm.attempts == 3
+    assert report.judged[0].stage == "rough"
+    assert any("not judged in full" in failure.error for failure in report.failures)
 
 
 def test_the_run_is_recorded_so_today_does_not_repeat(tmp_path):

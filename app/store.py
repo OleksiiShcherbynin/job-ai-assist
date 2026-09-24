@@ -51,6 +51,18 @@ CREATE TABLE IF NOT EXISTS runs (
     run_date  TEXT PRIMARY KEY,
     finished  TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS deliveries (
+    report_date TEXT PRIMARY KEY,
+    summary_en  TEXT NOT NULL,
+    summary_ru  TEXT NOT NULL,
+    sent_at     TEXT
+);
+
+CREATE TABLE IF NOT EXISTS bot_state (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
 
@@ -67,6 +79,19 @@ class Verdict:
     score: int | None
     reasons: list[str] = field(default_factory=list)
     reasons_ru: list[str] = field(default_factory=list)
+
+
+@dataclass
+class Delivery:
+    """A day's Telegram summaries, in both languages.
+
+    Stored rather than rebuilt from the Markdown: delivery can happen after a
+    restart, when the run's report object is long gone, and /report has to show
+    the same summary the morning message had.
+    """
+
+    day: date
+    summaries: dict[str, str]
 
 
 def fingerprint(card: VacancyCard) -> str:
@@ -212,3 +237,55 @@ class Store:
             (day.isoformat(), datetime.now(timezone.utc).isoformat()),
         )
         self._connection.commit()
+
+    def queue_delivery(self, day: date, summaries: dict[str, str]) -> None:
+        # A rerun of the same day replaces the summaries and clears sent_at, so
+        # the corrected report goes out again instead of the stale one standing.
+        self._connection.execute(
+            "INSERT INTO deliveries (report_date, summary_en, summary_ru, sent_at) "
+            "VALUES (?, ?, ?, NULL) "
+            "ON CONFLICT(report_date) DO UPDATE SET summary_en = excluded.summary_en, "
+            "summary_ru = excluded.summary_ru, sent_at = NULL",
+            (day.isoformat(), summaries["en"], summaries["ru"]),
+        )
+        self._connection.commit()
+
+    def pending_deliveries(self) -> list[Delivery]:
+        rows = self._connection.execute(
+            "SELECT report_date, summary_en, summary_ru FROM deliveries "
+            "WHERE sent_at IS NULL ORDER BY report_date"
+        ).fetchall()
+        return [self._delivery(row) for row in rows]
+
+    def delivery(self, day: date) -> Delivery | None:
+        row = self._connection.execute(
+            "SELECT report_date, summary_en, summary_ru FROM deliveries WHERE report_date = ?",
+            (day.isoformat(),),
+        ).fetchone()
+        return self._delivery(row) if row else None
+
+    def mark_delivered(self, day: date) -> None:
+        self._connection.execute(
+            "UPDATE deliveries SET sent_at = ? WHERE report_date = ?",
+            (datetime.now(timezone.utc).isoformat(), day.isoformat()),
+        )
+        self._connection.commit()
+
+    def get_state(self, key: str) -> str | None:
+        row = self._connection.execute("SELECT value FROM bot_state WHERE key = ?", (key,)).fetchone()
+        return row["value"] if row else None
+
+    def set_state(self, key: str, value: str) -> None:
+        self._connection.execute(
+            "INSERT INTO bot_state (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
+        self._connection.commit()
+
+    @staticmethod
+    def _delivery(row: sqlite3.Row) -> Delivery:
+        return Delivery(
+            day=date.fromisoformat(row["report_date"]),
+            summaries={"en": row["summary_en"], "ru": row["summary_ru"]},
+        )

@@ -10,21 +10,24 @@ import logging
 import os
 import re
 import sys
-import time
+import threading
 from datetime import date
 from pathlib import Path
 
 from dotenv import load_dotenv
 
+from app.bot import Bot
 from app.config import RunConfig, load_config
 from app.gemini import GeminiJudge
 from app.pacing import Pacer
 from app.pipeline import Pipeline
-from app.report import LANGUAGES, RunReport, render_markdown
+from app.report import LANGUAGES, RunReport, render_markdown, render_telegram_summary
 from app.store import Store
 from core.models import CandidateProfile
+from core.ports import Messenger
 from local_connectors.llm import extract, is_account_error
 from local_connectors.resume_loader import load_resume_text
+from local_connectors.telegram import TelegramClient, redact
 from local_connectors.vacancy_source import ProfesiaSource
 
 log = logging.getLogger("daily-run")
@@ -56,6 +59,91 @@ def write_reports(report: RunReport, config: RunConfig) -> list[Path]:
         )
         written.append(path)
     return written
+
+
+def telegram_settings() -> tuple[str | None, int | None]:
+    """Token and owner chat id. Both are secrets-adjacent, so only the
+    environment carries them — never config.toml."""
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip() or None
+    raw_chat = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+    chat_id = int(raw_chat) if re.fullmatch(r"-?\d+", raw_chat) else None
+    return token, chat_id
+
+
+class RedactingFilter(logging.Filter):
+    def __init__(self, secret: str) -> None:
+        super().__init__()
+        self.secret = secret
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.msg = redact(record.getMessage(), self.secret)
+        record.args = None
+        if record.exc_info and not record.exc_text:
+            record.exc_text = logging.Formatter().formatException(record.exc_info)
+        if record.exc_text:
+            record.exc_text = redact(record.exc_text, self.secret)
+        return True
+
+
+def install_redaction(secret: str) -> RedactingFilter:
+    """Masks the secret in every line any handler writes, tracebacks included.
+
+    The Telegram client already keeps the token out of its errors; this is the
+    last line for whatever else might quote a URL. Handler filters rather than a
+    logger filter, because records from child loggers skip the root's filters.
+    """
+    redacting = RedactingFilter(secret)
+    for handler in logging.getLogger().handlers:
+        handler.addFilter(redacting)
+    return redacting
+
+
+def queue_report(config: RunConfig, report: RunReport) -> None:
+    """Queues the day's summaries, but only for a run that finished.
+
+    A run cut short by a refusing API is not marked done and repeats on every
+    check; queueing it would send a message every fifteen minutes.
+    """
+    store = Store(config.state_path)
+    try:
+        if store.last_run_date() != report.day:
+            return
+        store.queue_delivery(report.day, {
+            language: render_telegram_summary(report, config.min_score, language)
+            for language in LANGUAGES
+        })
+    finally:
+        store.close()
+
+
+def deliver(config: RunConfig, messenger: Messenger, chat_id: int | None) -> None:
+    """Drains the queue. A delivery problem never becomes a run problem."""
+    store = Store(config.state_path)
+    try:
+        Bot(messenger, store, config.report_dir, chat_id).deliver_pending()
+    except Exception as error:
+        log.warning("could not send the report to Telegram; will retry on the next check (%s)", error)
+    finally:
+        store.close()
+
+
+def start_listener(token: str, chat_id: int | None, config: RunConfig,
+                   wake: threading.Event) -> threading.Thread:
+    def listen() -> None:
+        # Opened inside the thread: an sqlite3 connection may not cross threads.
+        store = Store(config.state_path)
+        client = TelegramClient(token)
+        try:
+            Bot(client, store, config.report_dir, chat_id, wake=wake).listen(threading.Event())
+        except Exception:
+            log.exception("the Telegram listener stopped")
+        finally:
+            client.close()
+            store.close()
+
+    thread = threading.Thread(target=listen, name="telegram", daemon=True)
+    thread.start()
+    return thread
 
 
 def _clean_resume(text: str) -> str:
@@ -110,6 +198,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    # httpx logs every request URL at INFO. Telegram's URLs carry the bot token,
+    # and long polling would add a line a minute; the other request lines were
+    # noise already.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     load_dotenv(override=False)
 
     if not os.environ.get("GOOGLE_API_KEY"):
@@ -117,6 +209,20 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     config = load_config(args.config)
+
+    token, chat_id = telegram_settings()
+    telegram: Messenger | None = None
+    wake = threading.Event()
+    if token:
+        install_redaction(token)
+        telegram = TelegramClient(token)
+        if chat_id is None:
+            log.info("TELEGRAM_CHAT_ID is not set: send /start to the bot to learn it; "
+                     "reports are queued until then")
+        if not args.once:
+            start_listener(token, chat_id, config, wake)
+    else:
+        log.info("TELEGRAM_BOT_TOKEN is not set; the Telegram bot is off")
 
     failed = False
 
@@ -149,13 +255,25 @@ def main(argv: list[str] | None = None) -> int:
                     )
                     return 3
                 log.exception("the run failed; will try again on the next check")
+            else:
+                if telegram is not None:
+                    try:
+                        queue_report(config, report)
+                    except Exception:
+                        log.exception("could not queue the report for Telegram")
+
+        if telegram is not None:
+            deliver(config, telegram, chat_id)
 
         if args.once:
             # In the loop a failed run just waits for the next check. With --once
             # there is no next check inside this process, so a caller must be able
             # to tell a finished run from a broken one.
             return 1 if failed else 0
-        time.sleep(IDLE_CHECK_SECONDS)
+        # A chosen language wakes the loop early, so queued reports need not
+        # wait out the rest of the interval.
+        wake.wait(IDLE_CHECK_SECONDS)
+        wake.clear()
 
 
 if __name__ == "__main__":

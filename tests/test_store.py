@@ -2,7 +2,7 @@ from datetime import date, datetime, timezone
 
 import pytest
 
-from app.store import Store, quota_day
+from app.store import Delivery, Store, quota_day
 from core.models import VacancyCard
 
 
@@ -151,3 +151,67 @@ def test_the_last_run_date_is_remembered(store):
     store.mark_run(date(2026, 9, 10))
 
     assert store.last_run_date() == date(2026, 9, 10)
+
+
+SUMMARIES = {"en": "<b>Vacancies</b>", "ru": "<b>Вакансии</b>"}
+
+
+def test_a_queued_report_waits_to_be_sent(store):
+    store.queue_delivery(date(2026, 9, 15), SUMMARIES)
+
+    assert store.pending_deliveries() == [Delivery(day=date(2026, 9, 15), summaries=SUMMARIES)]
+
+
+def test_queued_reports_go_out_oldest_first(store):
+    """Each day's report holds that day's vacancies; a newer one does not replace it."""
+    store.queue_delivery(date(2026, 9, 16), SUMMARIES)
+    store.queue_delivery(date(2026, 9, 14), SUMMARIES)
+
+    assert [item.day for item in store.pending_deliveries()] == [date(2026, 9, 14), date(2026, 9, 16)]
+
+
+def test_a_delivered_report_is_no_longer_pending(store):
+    store.queue_delivery(date(2026, 9, 15), SUMMARIES)
+
+    store.mark_delivered(date(2026, 9, 15))
+
+    assert store.pending_deliveries() == []
+
+
+def test_rerunning_a_day_queues_the_corrected_summary_again(store):
+    """A --force rerun rewrites the report; the user should get the new one."""
+    store.queue_delivery(date(2026, 9, 15), SUMMARIES)
+    store.mark_delivered(date(2026, 9, 15))
+
+    store.queue_delivery(date(2026, 9, 15), {"en": "fixed", "ru": "исправлено"})
+
+    assert store.pending_deliveries() == [
+        Delivery(day=date(2026, 9, 15), summaries={"en": "fixed", "ru": "исправлено"})
+    ]
+
+
+def test_a_sent_summary_can_still_be_looked_up(store):
+    """/report must return the same summary the morning message had."""
+    store.queue_delivery(date(2026, 9, 15), SUMMARIES)
+    store.mark_delivered(date(2026, 9, 15))
+
+    assert store.delivery(date(2026, 9, 15)) == Delivery(day=date(2026, 9, 15), summaries=SUMMARIES)
+    assert store.delivery(date(2026, 9, 1)) is None
+
+
+def test_bot_state_survives_reopening_the_database(tmp_path):
+    path = tmp_path / "seen.db"
+    Store(path).set_state("language", "ru")
+
+    assert Store(path).get_state("language") == "ru"
+
+
+def test_bot_state_can_be_overwritten(store):
+    store.set_state("update_offset", "10")
+    store.set_state("update_offset", "11")
+
+    assert store.get_state("update_offset") == "11"
+
+
+def test_unknown_bot_state_is_none(store):
+    assert store.get_state("language") is None

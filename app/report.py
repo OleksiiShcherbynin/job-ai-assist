@@ -11,10 +11,14 @@ tokens rather than another request against a 20-a-day quota.
 
 from dataclasses import dataclass, field
 from datetime import date
+from html import escape
 
 from core.models import VacancyCard
 
 LANGUAGES = ("en", "ru")
+
+TELEGRAM_LIMIT = 4096
+"""Telegram's cap on one message, counted in UTF-16 code units."""
 
 
 @dataclass
@@ -63,6 +67,7 @@ _PHRASES = {
         "below": "Scored below {min_score} ({count})",
         "filtered": "Filtered out before scoring ({count})",
         "failed": "Not processed ({count})",
+        "more": "…and {count} more — in the file",
     },
     "ru": {
         "title": "Вакансии",
@@ -73,6 +78,7 @@ _PHRASES = {
         "below": "Ниже порога {min_score} ({count})",
         "filtered": "Отсеяно до оценки ({count})",
         "failed": "Не обработано ({count})",
+        "more": "…и ещё {count} — в файле",
     },
 }
 
@@ -95,10 +101,24 @@ def _entry(item: Judged, phrases: dict[str, str], language: str) -> list[str]:
     return lines
 
 
-def render_markdown(report: RunReport, min_score: int, language: str = "en") -> str:
+def _phrases_for(language: str) -> dict[str, str]:
     if language not in _PHRASES:
         raise ValueError(f"no phrasing for language {language!r}; known: {', '.join(LANGUAGES)}")
-    phrases = _PHRASES[language]
+    return _PHRASES[language]
+
+
+def _counts(report: RunReport, min_score: int, phrases: dict[str, str], strong: int) -> str:
+    return phrases["counts"].format(
+        seen=report.seen,
+        scored=len(report.judged),
+        min_score=min_score,
+        strong=strong,
+        rejected=len(report.rejected),
+    )
+
+
+def render_markdown(report: RunReport, min_score: int, language: str = "en") -> str:
+    phrases = _phrases_for(language)
 
     ranked = sorted(report.judged, key=lambda item: item.score, reverse=True)
     strong = [item for item in ranked if item.score >= min_score]
@@ -107,13 +127,7 @@ def render_markdown(report: RunReport, min_score: int, language: str = "en") -> 
     lines = [
         f"# {phrases['title']} — {report.day.isoformat()}",
         "",
-        phrases["counts"].format(
-            seen=report.seen,
-            scored=len(report.judged),
-            min_score=min_score,
-            strong=len(strong),
-            rejected=len(report.rejected),
-        ),
+        _counts(report, min_score, phrases, len(strong)),
         "",
     ]
 
@@ -146,3 +160,45 @@ def render_markdown(report: RunReport, min_score: int, language: str = "en") -> 
         lines += [""]
 
     return "\n".join(lines)
+
+
+def telegram_length(text: str) -> int:
+    return len(text.encode("utf-16-le")) // 2
+
+
+def render_telegram_summary(report: RunReport, min_score: int, language: str = "en") -> str:
+    """The message that arrives with the report file.
+
+    Only the strong matches, without reasons: the phone shows what is worth
+    opening, the attached file explains why. HTML rather than MarkdownV2,
+    because escaping three characters is harder to get wrong than eighteen.
+    """
+    phrases = _phrases_for(language)
+    strong = sorted(
+        (item for item in report.judged if item.score >= min_score),
+        key=lambda item: item.score,
+        reverse=True,
+    )
+
+    text = (
+        f"<b>{escape(phrases['title'])} — {report.day.isoformat()}</b>\n"
+        + escape(_counts(report, min_score, phrases, len(strong)))
+    )
+    if not strong:
+        return f"{text}\n\n{escape(phrases['nothing'])}"
+
+    def tail(count: int) -> str:
+        return "\n\n" + escape(phrases["more"].format(count=count))
+
+    for shown, item in enumerate(strong):
+        entry = (
+            f'\n\n<b>{item.score}</b> · <a href="{escape(item.card.url)}">{escape(item.card.title)}</a>\n'
+            + escape(_facts(item.card))
+        )
+        left_after = len(strong) - shown - 1
+        needed = telegram_length(text + entry) + (telegram_length(tail(left_after)) if left_after else 0)
+        if needed > TELEGRAM_LIMIT:
+            # The previous step reserved room for exactly this tail.
+            return text + tail(len(strong) - shown)
+        text += entry
+    return text

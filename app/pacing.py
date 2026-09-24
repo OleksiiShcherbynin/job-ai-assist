@@ -55,9 +55,12 @@ def classify_rate_limit(error: Exception) -> RateLimitKind:
         return RateLimitKind.ACCOUNT
 
     text = str(error).lower()
-    if "quota_exceeded" in text:
+    # The quotaId says which limit ran out, and it is the only part of the
+    # message that does: the prose is identical for the minute and the day.
+    if "perdayper" in text or "requestsperday" in text or "quota_exceeded" in text:
         return RateLimitKind.DAILY
-    if "rate_limit_exceeded" in text or "too_many_requests" in text:
+    if ("perminuteper" in text or "requestsperminute" in text or "retrydelay" in text
+            or "rate_limit_exceeded" in text or "too_many_requests" in text):
         return RateLimitKind.TRANSIENT
     return RateLimitKind.OTHER
 

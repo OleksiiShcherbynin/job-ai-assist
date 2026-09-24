@@ -1,7 +1,35 @@
 """Prompt construction only — no model is called here."""
 
-from core.models import MatchResult
+from types import SimpleNamespace
+
+import app.gemini as gemini_module
+from app.config import ModelRoles
+from app.gemini import GeminiJudge
+from core.models import MatchResult, Vacancy, VacancyCard
 from local_connectors.llm import _FENCE, judge_prompt, score_prompt
+
+
+def test_every_stage_asks_the_client_for_a_single_attempt(monkeypatch):
+    """Retries inside the client are invisible to the pacer: on 2026-09-23 one
+    paced judge call became four requests and blew the five-a-minute limit.
+    Waiting and retrying belongs to the pipeline, which paces."""
+    asked: list[dict] = []
+
+    def capture(*args, **kwargs):
+        asked.append(kwargs)
+        return MatchResult(score=50)
+
+    monkeypatch.setattr(gemini_module, "score_match", capture)
+    monkeypatch.setattr(gemini_module, "judge_match", capture)
+    monkeypatch.setattr(gemini_module, "extract", lambda *a, **kw: asked.append(kw) or Vacancy())
+
+    judge = GeminiJudge(SimpleNamespace(models=ModelRoles()), "profile", "prefs", "resume")
+    card = VacancyCard(offer_id="O1", title="Junior", url="https://example.invalid/O1")
+    judge.extract_vacancy("posting text")
+    judge.rough_score(Vacancy(raw_text="text"), card)
+    judge.final_judge(Vacancy(raw_text="text"), card)
+
+    assert [call.get("max_attempts") for call in asked] == [1, 1, 1]
 
 
 def test_match_result_carries_both_languages():
