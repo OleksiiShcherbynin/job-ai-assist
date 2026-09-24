@@ -60,17 +60,30 @@ _RETRYABLE = ("503", "429", "500", "502", "504", "UNAVAILABLE", "capacity", "rat
 # A 429 does not always mean "too fast". Depleted billing credits arrive as one
 # too, from every model, and retrying it turned a single run into hundreds of
 # refused requests. Anything matching here must fail immediately.
+#
+# A bare "billing" used to be on this list and cost the 2026-09-23 run: Google
+# answers an exceeded per-minute limit with "please check your plan and billing
+# details", so a 51-second wait was read as a dead account and the run was
+# abandoned with 56 vacancies already scored. Each marker here now names the
+# fault itself rather than a word that appears next to it.
 ACCOUNT_ERROR_MARKERS = (
     "prepayment credits are depleted",
-    "billing",
+    "billing account",
+    "billing is not enabled",
     "api key not valid",
     "permission_denied",
 )
+
+# Structure, not wording: a refusal that names a quota or the seconds to wait is
+# a throughput limit whatever prose surrounds it, and throughput limits pass.
+THROUGHPUT_MARKERS = ("quotaid", "retrydelay", "perminuteper", "perdayper")
 
 
 def is_account_error(error: Exception) -> bool:
     """True when no model will answer and no amount of waiting will help."""
     text = str(error).lower()
+    if any(marker in text for marker in THROUGHPUT_MARKERS):
+        return False
     return any(marker in text for marker in ACCOUNT_ERROR_MARKERS)
 
 _MAX_INPUT_CHARS = 20_000

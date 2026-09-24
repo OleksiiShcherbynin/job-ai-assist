@@ -4,6 +4,7 @@ from app.config import ModelQuota, RunConfig
 from app.pacing import DailyQuotaExhausted, Pacer, RateLimitKind, classify_rate_limit
 from app.store import Store
 from core.models import SearchPreferences
+from local_connectors.llm import is_account_error
 
 MODEL = "gemini-3.5-flash"
 
@@ -116,12 +117,38 @@ DEPLETED = (
 )
 
 
+def _google_429(quota_id: str, limit: int, retry_delay: str) -> str:
+    """Google's real wording, from the container log of 2026-09-23.
+
+    Note "plan and billing details": the same sentence arrives for a limit that
+    clears in a minute and for one that does not clear at all.
+    """
+    return (
+        "429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your "
+        "current quota, please check your plan and billing details. For more information "
+        "on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits.\\n* "
+        "Quota exceeded for metric: generativelanguage.googleapis.com/"
+        f"generate_content_free_tier_requests, limit: {limit}, model: gemini-3.5-flash "
+        f"Please retry in {retry_delay}.', 'status': 'RESOURCE_EXHAUSTED', 'details': "
+        "[{'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': "
+        f"[{{'quotaId': '{quota_id}', 'quotaValue': '{limit}'}}]}}, "
+        "{'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': "
+        f"'{retry_delay}'}}]}}}}"
+    )
+
+
+PER_MINUTE = _google_429("GenerateRequestsPerMinutePerProjectPerModel-FreeTier", 5, "51s")
+PER_DAY = _google_429("GenerateRequestsPerDayPerProjectPerModel-FreeTier", 20, "3600s")
+
+
 @pytest.mark.parametrize(
     "message, kind",
     [
         ("429 rate_limit_exceeded: per-minute request limit", RateLimitKind.TRANSIENT),
         ("429 too_many_requests", RateLimitKind.TRANSIENT),
         ("429 quota_exceeded: daily quota reached", RateLimitKind.DAILY),
+        (PER_MINUTE, RateLimitKind.TRANSIENT),
+        (PER_DAY, RateLimitKind.DAILY),
         (DEPLETED, RateLimitKind.ACCOUNT),
         ("503 UNAVAILABLE", RateLimitKind.OTHER),
     ],
@@ -138,3 +165,22 @@ def test_depleted_credits_are_not_mistaken_for_a_rate_limit():
     turned 20 vacancies into 240 futile requests."""
     assert classify_rate_limit(Exception(DEPLETED)) is not RateLimitKind.TRANSIENT
     assert classify_rate_limit(Exception(DEPLETED)) is not RateLimitKind.DAILY
+
+
+def test_a_busy_minute_is_not_mistaken_for_a_dead_account():
+    """The 2026-09-23 run died on this: the word "billing" in Google's ordinary
+    rate-limit message made a 51-second wait look like a dead account, and the
+    whole run was abandoned with 56 vacancies already scored."""
+    assert is_account_error(Exception(PER_MINUTE)) is False
+    assert classify_rate_limit(Exception(PER_MINUTE)) is RateLimitKind.TRANSIENT
+
+
+def test_a_spent_day_is_not_mistaken_for_a_dead_account():
+    assert is_account_error(Exception(PER_DAY)) is False
+
+
+def test_anything_carrying_a_retry_delay_is_a_throughput_limit():
+    """A limit that names the seconds to wait is, by construction, one that waiting clears."""
+    invented = "429 something new nobody has seen, 'retryDelay': '12s', please check your billing details"
+
+    assert is_account_error(Exception(invented)) is False
