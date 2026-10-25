@@ -63,7 +63,20 @@ CREATE TABLE IF NOT EXISTS bot_state (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS tracker_outbox (
+    offer_id  TEXT PRIMARY KEY,
+    queued_at TEXT NOT NULL
+);
 """
+
+# Statuses that carry a score; only these are worth sending to job-apply-tracker.
+_SCORED = ("scored-rough", "scored-final")
+_REPOST_PREFIX = "repost-of-"
+
+
+def _is_scored(status: str) -> bool:
+    return status in _SCORED or status.startswith(_REPOST_PREFIX)
 
 
 def quota_day(moment: datetime) -> date:
@@ -181,6 +194,14 @@ class Store:
                 reasons_json,
             ),
         )
+        if _is_scored(status):
+            # Payloads are built at send time, so re-queueing after a rough score
+            # turns final is what gets the tracker the newer number.
+            self._connection.execute(
+                "INSERT INTO tracker_outbox (offer_id, queued_at) VALUES (?, ?) "
+                "ON CONFLICT(offer_id) DO UPDATE SET queued_at = excluded.queued_at",
+                (card.offer_id, now),
+            )
         self._connection.commit()
 
     def verdict(self, offer_id: str) -> "Verdict | None":
@@ -270,6 +291,47 @@ class Store:
             (datetime.now(timezone.utc).isoformat(), day.isoformat()),
         )
         self._connection.commit()
+
+    def tracker_pending(self, limit: int) -> list[sqlite3.Row]:
+        """Queued vacancies with what a payload needs, oldest first.
+
+        A repost also brings its original's status: the repost row only says
+        "repost-of-…", while the score's stage belongs to the original.
+        """
+        return self._connection.execute(
+            """
+            SELECT o.offer_id, v.title, v.company, v.url, v.card_json, v.score,
+                   v.status, v.reasons_json, v.first_seen, original.status AS original_status
+            FROM tracker_outbox AS o
+            JOIN vacancies AS v ON v.offer_id = o.offer_id
+            LEFT JOIN vacancies AS original
+                   ON v.status LIKE 'repost-of-%'
+                  AND original.offer_id = substr(v.status, ?)
+            ORDER BY o.queued_at, o.offer_id
+            LIMIT ?
+            """,
+            (len(_REPOST_PREFIX) + 1, limit),
+        ).fetchall()
+
+    def tracker_done(self, offer_ids: list[str]) -> None:
+        self._connection.executemany(
+            "DELETE FROM tracker_outbox WHERE offer_id = ?", [(offer_id,) for offer_id in offer_ids]
+        )
+        self._connection.commit()
+
+    def queue_tracker_backlog(self) -> int:
+        """Queues every vacancy scored before the outbox existed, once ever."""
+        if self.get_state("tracker_backlog_queued"):
+            return 0
+        cursor = self._connection.execute(
+            "INSERT OR IGNORE INTO tracker_outbox (offer_id, queued_at) "
+            "SELECT offer_id, first_seen FROM vacancies "
+            "WHERE status IN (?, ?) OR status LIKE 'repost-of-%'",
+            _SCORED,
+        )
+        self._connection.commit()
+        self.set_state("tracker_backlog_queued", datetime.now(timezone.utc).isoformat())
+        return cursor.rowcount
 
     def get_state(self, key: str) -> str | None:
         row = self._connection.execute("SELECT value FROM bot_state WHERE key = ?", (key,)).fetchone()

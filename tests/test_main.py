@@ -18,6 +18,8 @@ def no_telegram_unless_asked(monkeypatch):
     """The developer's shell may carry real Telegram settings; tests never use them."""
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
     monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+    monkeypatch.delenv("TRACKER_API_URL", raising=False)
+    monkeypatch.delenv("TRACKER_API_TOKEN", raising=False)
     yield
     for handler in logging.getLogger().handlers:
         for installed in [f for f in handler.filters if isinstance(f, RedactingFilter)]:
@@ -281,3 +283,139 @@ def test_an_empty_token_means_no_bot(monkeypatch):
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "")
 
     assert telegram_settings() == (None, None)
+
+
+
+# --- job-apply-tracker push ---
+
+
+class FakeTracker:
+    def __init__(self, fail_with=None):
+        self.batches, self.fail_with = [], fail_with
+
+    def push(self, vacancies):
+        if self.fail_with:
+            raise self.fail_with
+        self.batches.append(vacancies)
+        return [{"external_id": item["external_id"], "status": "created", "id": 1}
+                for item in vacancies]
+
+
+def with_tracker(monkeypatch, tmp_path, tracker, report, events=None):
+    import app.main as main_module
+
+    monkeypatch.setenv("GOOGLE_API_KEY", "x")
+    monkeypatch.setenv("TRACKER_API_URL", "http://job-apply-tracker:8000")
+    monkeypatch.setenv("TRACKER_API_TOKEN", "tracker-token")
+    monkeypatch.setattr(main_module, "load_dotenv", lambda *a, **k: None)
+    monkeypatch.setattr(main_module, "load_config", lambda path: config_at(tmp_path))
+    monkeypatch.setattr(main_module, "TrackerClient", lambda url, token: tracker)
+
+    def run(config, today):
+        store = Store(config.state_path)
+        for judged in report.judged:
+            store.record(judged.card, status="scored-final", score=judged.score)
+        store.mark_run(report.day)
+        store.close()
+        return report
+
+    monkeypatch.setattr(main_module, "run_today", run)
+    return main_module
+
+
+def test_the_tracker_push_is_off_without_settings(tmp_path, monkeypatch, report, caplog):
+    import app.main as main_module
+
+    monkeypatch.setenv("GOOGLE_API_KEY", "x")
+    monkeypatch.setattr(main_module, "load_dotenv", lambda *a, **k: None)
+    monkeypatch.setattr(main_module, "load_config", lambda path: config_at(tmp_path))
+    monkeypatch.setattr(main_module, "TrackerClient",
+                        lambda url, token: pytest.fail("no settings, no client"))
+    monkeypatch.setattr(main_module, "run_today", lambda config, today: report)
+
+    with caplog.at_level(logging.INFO):
+        assert main_module.main(["--once"]) == 0
+    assert "tracker push is off" in caplog.text
+
+
+def test_a_finished_run_is_pushed_to_the_tracker(tmp_path, monkeypatch, report):
+    tracker = FakeTracker()
+    main_module = with_tracker(monkeypatch, tmp_path, tracker, report)
+
+    assert main_module.main(["--once"]) == 0
+
+    assert [item["external_id"] for item in tracker.batches[0]] == ["O1"]
+    assert Store(config_at(tmp_path).state_path).tracker_pending(10) == []
+
+
+def test_the_backlog_is_queued_when_the_push_starts(tmp_path, monkeypatch, report):
+    # Vacancies scored before the outbox existed still reach the tracker.
+    store = Store(config_at(tmp_path).state_path)
+    old = VacancyCard(offer_id="O0", title="Old one", url="https://www.profesia.sk/praca/x/O0")
+    store.record(old, status="scored-rough", score=45)
+    store.tracker_done(["O0"])
+    store.close()
+    tracker = FakeTracker()
+    main_module = with_tracker(monkeypatch, tmp_path, tracker, report)
+
+    main_module.main(["--once"])
+
+    sent = [item["external_id"] for batch in tracker.batches for item in batch]
+    assert "O0" in sent
+
+
+def test_a_tracker_failure_does_not_fail_the_run(tmp_path, monkeypatch, report, caplog):
+    # Review Focus #3: a refusing tracker (wrong token) costs one warning, nothing else.
+    from local_connectors.tracker import TrackerError
+
+    tracker = FakeTracker(fail_with=TrackerError("ConnectError: refused"))
+    main_module = with_tracker(monkeypatch, tmp_path, tracker, report)
+
+    assert main_module.main(["--once"]) == 0
+    assert "could not reach the tracker" in caplog.text
+    assert [row["offer_id"] for row in Store(config_at(tmp_path).state_path).tracker_pending(10)] == ["O1"]
+
+
+def test_telegram_goes_out_before_the_tracker_push(tmp_path, monkeypatch, report):
+    order = []
+    messenger = RecordingMessenger()
+    main_module = with_telegram(monkeypatch, tmp_path, messenger, report)
+
+    class OrderedTracker(FakeTracker):
+        def push(self, vacancies):
+            order.append(("tracker", len(messenger.sent)))
+            return super().push(vacancies)
+
+    monkeypatch.setenv("TRACKER_API_URL", "http://job-apply-tracker:8000")
+    monkeypatch.setenv("TRACKER_API_TOKEN", "tracker-token")
+    monkeypatch.setattr(main_module, "TrackerClient", lambda url, token: OrderedTracker())
+    store = Store(config_at(tmp_path).state_path)
+    store.record(report.judged[0].card, status="scored-final", score=87)
+    store.close()
+
+    main_module.main(["--once"])
+
+    assert order and order[0][1] > 0  # Telegram had already sent when the push began
+
+
+def test_the_tracker_token_never_reaches_the_log(tmp_path, monkeypatch, report, caplog):
+    tracker = FakeTracker(fail_with=RuntimeError("refused with tracker-token"))
+    main_module = with_tracker(monkeypatch, tmp_path, tracker, report)
+
+    main_module.main(["--once"])
+
+    assert "tracker-token" not in caplog.text
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_a_rejected_token_says_so(tmp_path, monkeypatch, report, caplog, status):
+    # Found in final review: "could not reach" sends you to check the network
+    # when the real problem is a typo'd or rotated token.
+    from local_connectors.tracker import TrackerError
+
+    tracker = FakeTracker(fail_with=TrackerError(f"{status} Unauthorized", status=status))
+    main_module = with_tracker(monkeypatch, tmp_path, tracker, report)
+
+    assert main_module.main(["--once"]) == 0
+    assert "rejected the token" in caplog.text
+    assert "TRACKER_API_TOKEN" in caplog.text

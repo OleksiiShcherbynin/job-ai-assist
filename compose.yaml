@@ -28,3 +28,16 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+
+    networks:
+      - default
+      # Shared with job-apply-tracker, reachable as http://job-apply-tracker:8000.
+      - jobnet
+
+networks:
+  default: {}
+  jobnet:
+    # Both projects declare this fixed name rather than marking it external:
+    # whichever starts first creates it, so this container still starts (and
+    # still sends its Telegram report) when the tracker has never been set up.
+    name: job-net

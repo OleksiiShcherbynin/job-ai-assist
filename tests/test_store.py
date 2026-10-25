@@ -215,3 +215,71 @@ def test_bot_state_can_be_overwritten(store):
 
 def test_unknown_bot_state_is_none(store):
     assert store.get_state("language") is None
+
+
+# --- Outbox for job-apply-tracker ---
+
+
+def pending_ids(store, limit=100):
+    return [row["offer_id"] for row in store.tracker_pending(limit)]
+
+
+def test_a_scored_vacancy_is_queued_for_the_tracker(store):
+    store.record(card(), status="scored-rough", score=55)
+    assert pending_ids(store) == ["O5000001"]
+
+
+def test_a_rejected_vacancy_is_not_queued_for_the_tracker(store):
+    store.record(card(), status="rejected-card", reason="senior")
+    store.record(card(offer_id="O5000002"), status="failed", reason="posting unreachable")
+    assert pending_ids(store) == []
+
+
+def test_a_final_judgement_requeues_a_rough_score(store):
+    store.record(card(), status="scored-rough", score=55)
+    store.tracker_done(["O5000001"])
+    store.record(card(), status="scored-final", score=78)
+    rows = store.tracker_pending(10)
+    assert [row["offer_id"] for row in rows] == ["O5000001"]
+    assert (rows[0]["score"], rows[0]["status"]) == (78, "scored-final")
+
+
+def test_a_repost_carries_its_originals_status(store):
+    store.record(card(offer_id="O1"), status="scored-final", score=80)
+    store.record(card(offer_id="O2"), status="repost-of-O1", score=80)
+    rows = {row["offer_id"]: row for row in store.tracker_pending(10)}
+    assert rows["O2"]["original_status"] == "scored-final"
+    assert rows["O1"]["original_status"] is None
+
+
+def test_delivered_vacancies_leave_the_outbox(store):
+    store.record(card(offer_id="O1"), status="scored-rough", score=50)
+    store.record(card(offer_id="O2"), status="scored-rough", score=50)
+    store.tracker_done(["O1"])
+    assert pending_ids(store) == ["O2"]
+
+
+def test_pending_comes_oldest_first_and_respects_the_limit(store):
+    start = datetime(2026, 10, 1, 8, 0, tzinfo=timezone.utc)
+    store.record(card(offer_id="O2"), status="scored-rough", score=50,
+                 moment=start.replace(hour=9))
+    store.record(card(offer_id="O1"), status="scored-rough", score=50, moment=start)
+    assert pending_ids(store, limit=1) == ["O1"]
+
+
+def test_the_backlog_is_queued_once_even_after_reopening(tmp_path):
+    # Vacancies scored before the outbox existed are queued by the backlog
+    # step, exactly once: later restarts must not resend everything.
+    path = tmp_path / "seen.db"
+    first = Store(path)
+    first.record(card(offer_id="O1"), status="scored-final", score=70)
+    first.record(card(offer_id="O2"), status="rejected-card", reason="senior")
+    first.tracker_done(["O1"])
+    assert first.queue_tracker_backlog() == 1
+    assert pending_ids(first) == ["O1"]
+    first.tracker_done(["O1"])
+    first.close()
+
+    second = Store(path)
+    assert second.queue_tracker_backlog() == 0
+    assert pending_ids(second) == []

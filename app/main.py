@@ -23,11 +23,13 @@ from app.pacing import Pacer
 from app.pipeline import Pipeline
 from app.report import LANGUAGES, RunReport, render_markdown, render_telegram_summary
 from app.store import Store
+from app.tracker_sync import sync
 from core.models import CandidateProfile
-from core.ports import Messenger
+from core.ports import Messenger, VacancyTracker
 from local_connectors.llm import extract, is_account_error
 from local_connectors.resume_loader import load_resume_text
 from local_connectors.telegram import TelegramClient, redact
+from local_connectors.tracker import TrackerClient, TrackerError
 from local_connectors.vacancy_source import ProfesiaSource
 
 log = logging.getLogger("daily-run")
@@ -68,6 +70,13 @@ def telegram_settings() -> tuple[str | None, int | None]:
     raw_chat = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
     chat_id = int(raw_chat) if re.fullmatch(r"-?\d+", raw_chat) else None
     return token, chat_id
+
+
+def tracker_settings() -> tuple[str | None, str | None]:
+    """job-apply-tracker's base URL and API token, from the environment only."""
+    url = os.environ.get("TRACKER_API_URL", "").strip() or None
+    token = os.environ.get("TRACKER_API_TOKEN", "").strip() or None
+    return url, token
 
 
 class RedactingFilter(logging.Filter):
@@ -123,6 +132,27 @@ def deliver(config: RunConfig, messenger: Messenger, chat_id: int | None) -> Non
         Bot(messenger, store, config.report_dir, chat_id).deliver_pending()
     except Exception as error:
         log.warning("could not send the report to Telegram; will retry on the next check (%s)", error)
+    finally:
+        store.close()
+
+
+def push_to_tracker(config: RunConfig, tracker: VacancyTracker) -> None:
+    """Drains the tracker outbox. A tracker problem never becomes a run problem:
+    whatever was not accepted stays queued for the next check."""
+    store = Store(config.state_path)
+    try:
+        result = sync(store, tracker)
+        if result.sent:
+            log.info("sent %d vacancies to the tracker: %d accepted, %d refused",
+                     result.sent, result.accepted, result.invalid)
+    except TrackerError as error:
+        if error.status in (401, 403):
+            log.warning("the tracker rejected the token; check TRACKER_API_TOKEN in .env "
+                        "and restart with `docker compose up -d` (%s)", error)
+        else:
+            log.warning("could not reach the tracker; will retry on the next check (%s)", error)
+    except Exception as error:
+        log.warning("could not reach the tracker; will retry on the next check (%s)", error)
     finally:
         store.close()
 
@@ -224,6 +254,21 @@ def main(argv: list[str] | None = None) -> int:
     else:
         log.info("TELEGRAM_BOT_TOKEN is not set; the Telegram bot is off")
 
+    tracker_url, tracker_token = tracker_settings()
+    tracker: VacancyTracker | None = None
+    if tracker_url and tracker_token:
+        install_redaction(tracker_token)
+        tracker = TrackerClient(tracker_url, tracker_token)
+        store = Store(config.state_path)
+        try:
+            backlog = store.queue_tracker_backlog()
+        finally:
+            store.close()
+        if backlog:
+            log.info("queued %d already scored vacancies for the tracker", backlog)
+    else:
+        log.info("TRACKER_API_URL/TRACKER_API_TOKEN not set; the tracker push is off")
+
     failed = False
 
     while True:
@@ -264,6 +309,9 @@ def main(argv: list[str] | None = None) -> int:
 
         if telegram is not None:
             deliver(config, telegram, chat_id)
+        # After Telegram on purpose: the morning report never waits for the tracker.
+        if tracker is not None:
+            push_to_tracker(config, tracker)
 
         if args.once:
             # In the loop a failed run just waits for the next check. With --once
