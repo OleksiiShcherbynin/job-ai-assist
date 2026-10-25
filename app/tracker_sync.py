@@ -18,6 +18,11 @@ BATCH_SIZE = 200
 
 ACCEPTED = ("created", "updated")
 
+# The tracker's field limits. Longer text would come back "invalid", and invalid
+# items are never resent, so clamping here is what keeps such a vacancy.
+TITLE_MAX = 255
+TEXT_MAX = 200
+
 
 @dataclass
 class SyncResult:
@@ -38,11 +43,11 @@ def to_payload(row) -> dict:
     stage_status = row["original_status"] or row["status"]
     return {
         "external_id": row["offer_id"],
-        "title": row["title"],
-        "company": row["company"] or "",
+        "title": row["title"][:TITLE_MAX],
+        "company": (row["company"] or "")[:TEXT_MAX],
         "url": row["url"],
-        "location": card.get("location") or "",
-        "salary": card.get("salary_text") or "",
+        "location": (card.get("location") or "")[:TEXT_MAX],
+        "salary": (card.get("salary_text") or "")[:TEXT_MAX],
         "score": row["score"],
         "score_stage": "final" if stage_status == "scored-final" else "rough",
         "reasons_en": _lines(reasons.get("en", [])),

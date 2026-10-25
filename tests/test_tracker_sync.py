@@ -139,3 +139,22 @@ def test_a_short_answer_leaves_unmatched_items_queued(store):
     assert result.accepted == 1
     assert len(tracker.batches) == 1  # stops instead of resending the same rows
     assert len(queued(store)) == 1
+
+
+def test_long_fields_are_clamped_to_the_trackers_limits(store):
+    # Found in final review: the tracker rejects location/salary/company over
+    # 200 and title over 255 as invalid, and invalid items are never resent.
+    long_card = VacancyCard(
+        offer_id="O9",
+        title="T" * 300,
+        company="C" * 250,
+        url="https://www.profesia.sk/praca/x/O9",
+        location="Bratislava, " * 30,
+        salary_text="S" * 250,
+    )
+    store.record(long_card, status="scored-final", score=70)
+    payload = to_payload(store.tracker_pending(1)[0])
+    assert len(payload["title"]) == 255
+    assert len(payload["company"]) == 200
+    assert len(payload["location"]) == 200
+    assert len(payload["salary"]) == 200

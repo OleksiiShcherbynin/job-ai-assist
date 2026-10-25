@@ -368,7 +368,7 @@ def test_a_tracker_failure_does_not_fail_the_run(tmp_path, monkeypatch, report, 
     # Review Focus #3: a refusing tracker (wrong token) costs one warning, nothing else.
     from local_connectors.tracker import TrackerError
 
-    tracker = FakeTracker(fail_with=TrackerError("401 Unauthorized", status=401))
+    tracker = FakeTracker(fail_with=TrackerError("ConnectError: refused"))
     main_module = with_tracker(monkeypatch, tmp_path, tracker, report)
 
     assert main_module.main(["--once"]) == 0
@@ -405,3 +405,17 @@ def test_the_tracker_token_never_reaches_the_log(tmp_path, monkeypatch, report, 
     main_module.main(["--once"])
 
     assert "tracker-token" not in caplog.text
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_a_rejected_token_says_so(tmp_path, monkeypatch, report, caplog, status):
+    # Found in final review: "could not reach" sends you to check the network
+    # when the real problem is a typo'd or rotated token.
+    from local_connectors.tracker import TrackerError
+
+    tracker = FakeTracker(fail_with=TrackerError(f"{status} Unauthorized", status=status))
+    main_module = with_tracker(monkeypatch, tmp_path, tracker, report)
+
+    assert main_module.main(["--once"]) == 0
+    assert "rejected the token" in caplog.text
+    assert "TRACKER_API_TOKEN" in caplog.text

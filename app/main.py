@@ -29,7 +29,7 @@ from core.ports import Messenger, VacancyTracker
 from local_connectors.llm import extract, is_account_error
 from local_connectors.resume_loader import load_resume_text
 from local_connectors.telegram import TelegramClient, redact
-from local_connectors.tracker import TrackerClient
+from local_connectors.tracker import TrackerClient, TrackerError
 from local_connectors.vacancy_source import ProfesiaSource
 
 log = logging.getLogger("daily-run")
@@ -145,6 +145,12 @@ def push_to_tracker(config: RunConfig, tracker: VacancyTracker) -> None:
         if result.sent:
             log.info("sent %d vacancies to the tracker: %d accepted, %d refused",
                      result.sent, result.accepted, result.invalid)
+    except TrackerError as error:
+        if error.status in (401, 403):
+            log.warning("the tracker rejected the token; check TRACKER_API_TOKEN in .env "
+                        "and restart with `docker compose up -d` (%s)", error)
+        else:
+            log.warning("could not reach the tracker; will retry on the next check (%s)", error)
     except Exception as error:
         log.warning("could not reach the tracker; will retry on the next check (%s)", error)
     finally:
