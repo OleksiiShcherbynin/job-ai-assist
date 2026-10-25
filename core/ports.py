@@ -50,3 +50,16 @@ class Messenger(Protocol):
 
     def edit_message(self, chat_id: int, message_id: int, html: str) -> None:
         ...
+
+
+@runtime_checkable
+class VacancyTracker(Protocol):
+    """Where scored vacancies go once judged (job-apply-tracker's ingest API).
+
+    Batches are plain dicts in the tracker's own contract: the shape belongs to
+    the other system, and mirroring it in a model here would only drift.
+    """
+
+    def push(self, vacancies: list[dict]) -> list[dict]:
+        """Sends one batch; returns the tracker's per-item results in order."""
+        ...
