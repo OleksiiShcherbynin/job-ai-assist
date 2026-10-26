@@ -546,3 +546,40 @@ def test_the_closure_check_does_not_need_todays_run(tmp_path, monkeypatch, repor
 
     assert main_module.main(["--once"]) == 1
     assert [item["external_id"] for item in tracker.reported] == ["O1"]
+
+
+def test_the_closure_check_is_dated_after_the_run(tmp_path, monkeypatch, report):
+    # Found in final review: a run that crosses midnight must not let the check
+    # mark yesterday, or Profesia gets walked again fifteen minutes later.
+    from datetime import date as real_date
+
+    days = iter([DAY, real_date(2026, 9, 11)])
+
+    class Clock(real_date):
+        @classmethod
+        def today(cls):
+            return next(days, real_date(2026, 9, 11))
+
+    tracker = CheckingTracker()
+    main_module = with_closure_check(monkeypatch, tmp_path, tracker, report)
+    monkeypatch.setattr(main_module, "date", Clock)
+
+    main_module.main(["--once"])
+
+    assert Store(config_at(tmp_path).state_path).closure_checked_on() == real_date(2026, 9, 11)
+
+
+def test_walk_numbers_are_logged_even_when_the_report_fails(tmp_path, monkeypatch, report, caplog):
+    from local_connectors.tracker import TrackerError
+
+    class RefusingTracker(CheckingTracker):
+        def report_closed(self, closed):
+            raise TrackerError("503 Service Unavailable", status=503)
+
+    main_module = with_closure_check(monkeypatch, tmp_path, RefusingTracker(), report)
+
+    with caplog.at_level(logging.INFO):
+        assert main_module.main(["--once"]) == 0
+
+    assert "checked 1 postings on Profesia: 1 closed" in caplog.text
+    assert "could not check closed postings" in caplog.text

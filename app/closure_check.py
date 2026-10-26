@@ -28,6 +28,14 @@ PAUSE_SECONDS = 2.0
 BATCH_SIZE = 200
 """The tracker's per-request limit."""
 
+MAX_FETCHES = 100
+"""A day's ceiling. The list is expected to hold tens of offers; the inbox only
+grows until postings close, and nothing else stops it from reaching hundreds."""
+
+MAX_FAILURES_IN_A_ROW = 3
+"""Profesia unreachable: with a 30 s timeout per page, going on would hold the
+daily loop for half an hour to learn nothing."""
+
 PROFESIA_HOSTS = ("www.profesia.sk", "profesia.sk")
 
 # Every answer the tracker can give settles an item: closed/unchanged are done,
@@ -81,11 +89,28 @@ def report_pending(store: Store, tracker: VacancyTracker, result: CheckResult) -
 
 def walk(tracker_offers: list[dict], source: VacancySource,
          sleeper: Callable[[float], None], result: CheckResult) -> list[str]:
-    """Fetches each Profesia posting; returns the offer ids found closed."""
+    """Fetches each Profesia posting; returns the offer ids found closed.
+
+    Never raises: anything that goes wrong with one offer skips that offer, and
+    a crash here would leave the day unmarked and repeat the walk every check.
+    """
     closed: list[str] = []
-    for item in tracker_offers:
-        offer_id, url = item.get("external_id"), item.get("url") or ""
-        if not offer_id or not _is_profesia(url):
+    failures_in_a_row = 0
+    for index, item in enumerate(tracker_offers):
+        if failures_in_a_row >= MAX_FAILURES_IN_A_ROW or result.fetched >= MAX_FETCHES:
+            left = len(tracker_offers) - index
+            result.skipped += left
+            if failures_in_a_row >= MAX_FAILURES_IN_A_ROW:
+                log.warning("Profesia is not answering; %d postings left for tomorrow", left)
+            else:
+                log.warning("reached the limit of %d postings a day; %d left for tomorrow",
+                            MAX_FETCHES, left)
+            break
+
+        offer_id = item.get("external_id") if isinstance(item, dict) else None
+        url = item.get("url") if isinstance(item, dict) else None
+        if not isinstance(offer_id, str) or not offer_id or not isinstance(url, str) \
+                or not _is_profesia(url):
             result.skipped += 1
             continue
 
@@ -94,13 +119,15 @@ def walk(tracker_offers: list[dict], source: VacancySource,
         result.fetched += 1
         try:
             status, html = source.fetch_page(url)
+            state = posting_state(status, html)
         except Exception as error:
             # Not knowing is not "closed": the offer is simply checked tomorrow.
             log.info("could not load %s, checking it again tomorrow (%s)", offer_id, error)
             result.skipped += 1
+            failures_in_a_row += 1
             continue
 
-        state = posting_state(status, html)
+        failures_in_a_row = 0
         if state == "closed":
             closed.append(offer_id)
         elif state == "unknown":
@@ -116,9 +143,13 @@ def check_closures(
     today: date,
     sleeper: Callable[[float], None] | None = None,
     now: Callable[[], datetime] | None = None,
+    result: CheckResult | None = None,
 ) -> CheckResult:
-    """One check. TrackerError propagates; what was found is stored first."""
-    result = CheckResult()
+    """One check. TrackerError propagates; what was found is stored first.
+
+    Pass `result` to keep the walk's numbers when the report afterwards fails.
+    """
+    result = result if result is not None else CheckResult()
     report_pending(store, tracker, result)
     if store.closure_checked_on() == today:
         return result

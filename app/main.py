@@ -17,7 +17,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from app.bot import Bot
-from app.closure_check import check_closures
+from app.closure_check import CheckResult, check_closures
 from app.config import RunConfig, load_config
 from app.gemini import GeminiJudge
 from app.pacing import Pacer
@@ -167,17 +167,19 @@ def check_closed_postings(config: RunConfig, tracker: VacancyTracker, today: dat
     Like the push, a problem here never becomes a run problem."""
     store = Store(config.state_path)
     source = ProfesiaSource()  # only its client and headers are used: no listing is read
+    result = CheckResult()
     try:
-        result = check_closures(store, tracker, source, today)
-        if result.fetched or result.reported:
-            log.info("checked %d postings on Profesia: %d closed, %d skipped; "
-                     "reported %d to the tracker",
-                     result.fetched, result.closed, result.skipped, result.reported)
+        check_closures(store, tracker, source, today, result=result)
     except Exception as error:
         _warn_tracker(error, "could not check closed postings")
     finally:
         source.close()
         store.close()
+        # Also after a failed report: what the walk found is stored and worth knowing.
+        if result.fetched or result.reported:
+            log.info("checked %d postings on Profesia: %d closed, %d skipped; "
+                     "reported %d to the tracker",
+                     result.fetched, result.closed, result.skipped, result.reported)
 
 
 def start_listener(token: str, chat_id: int | None, config: RunConfig,
@@ -336,8 +338,9 @@ def main(argv: list[str] | None = None) -> int:
         if tracker is not None:
             push_to_tracker(config, tracker)
             # After the push: a vacancy scored today exists in the tracker before
-            # anyone asks whether its posting closed.
-            check_closed_postings(config, tracker, today)
+            # anyone asks whether its posting closed. The date is read again here:
+            # a run that crossed midnight must not mark the walk as yesterday's.
+            check_closed_postings(config, tracker, date.today())
 
         if args.once:
             # In the loop a failed run just waits for the next check. With --once

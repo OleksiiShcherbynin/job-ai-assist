@@ -4,7 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from app.closure_check import PAUSE_SECONDS, check_closures
+from app.closure_check import (MAX_FAILURES_IN_A_ROW, MAX_FETCHES, PAUSE_SECONDS, CheckResult,
+                               check_closures)
 from app.store import Store
 from local_connectors.tracker import TrackerError
 
@@ -206,7 +207,7 @@ def test_unknown_and_invalid_answers_leave_the_queue_with_a_warning(store, caplo
         run(store, tracker, source)
 
     assert pending(store) == []
-    assert "O1" in caplog.text and "O2" in caplog.text
+    assert "O1: unknown" in caplog.text and "O2: invalid" in caplog.text
 
 
 def test_a_short_answer_keeps_unmatched_items_pending(store):
@@ -224,6 +225,65 @@ def test_a_short_answer_keeps_unmatched_items_pending(store):
     assert len(tracker.reports) == 1  # stops instead of resending the same rows
     assert result.settled == 1
     assert len(pending(store)) == 1
+
+
+def test_profesia_being_down_stops_the_walk_early(store):
+    # Found in final review: 50 offers x a 30 s timeout would hold the loop for half an hour.
+    offers = [offer(f"O{n}") for n in range(10)]
+    source = FakeSource({url(f"O{n}"): ConnectionError("timed out") for n in range(10)})
+
+    result = run(store, FakeTracker(offers), source)
+
+    assert len(source.fetched) == MAX_FAILURES_IN_A_ROW == 3
+    assert result.skipped == 10
+    assert store.closure_checked_on() == TODAY
+
+
+def test_a_success_resets_the_failure_count(store):
+    pages = {url("O0"): ConnectionError("x"), url("O1"): ConnectionError("x"),
+             url("O2"): (200, OPEN), url("O3"): ConnectionError("x"),
+             url("O4"): ConnectionError("x"), url("O5"): (200, CLOSED)}
+    source = FakeSource(pages)
+
+    result = run(store, FakeTracker([offer(f"O{n}") for n in range(6)]), source)
+
+    assert len(source.fetched) == 6
+    assert result.closed == 1
+
+
+def test_the_walk_is_capped(store, caplog):
+    offers = [offer(f"O{n}") for n in range(MAX_FETCHES + 5)]
+    source = FakeSource({item["url"]: (200, OPEN) for item in offers})
+
+    with caplog.at_level(logging.WARNING):
+        result = run(store, FakeTracker(offers), source)
+
+    assert len(source.fetched) == MAX_FETCHES
+    assert result.skipped == 5
+    assert "5" in caplog.text and "limit" in caplog.text
+
+
+def test_a_malformed_offer_is_skipped_not_fatal(store):
+    # Found in final review: a crash mid-walk would leave the day unmarked and
+    # send Profesia the same requests every fifteen minutes.
+    tracker = FakeTracker(["garbage", {"external_id": None, "url": url("O9")}, {"url": 5}, offer("O1")])
+    source = FakeSource({url("O1"): (200, CLOSED)})
+
+    result = run(store, tracker, source)
+
+    assert source.fetched == [url("O1")]
+    assert (result.closed, result.skipped) == (1, 3)
+    assert store.closure_checked_on() == TODAY
+
+
+def test_the_caller_keeps_the_walk_numbers_when_the_report_fails(store):
+    result = CheckResult()
+    with pytest.raises(TrackerError):
+        check_closures(store, FakeTracker([offer("O1")], fail_post=True),
+                       FakeSource({url("O1"): (200, CLOSED)}), TODAY,
+                       sleeper=lambda s: None, now=lambda: NOW, result=result)
+
+    assert (result.fetched, result.closed) == (1, 1)
 
 
 def test_a_big_closed_list_goes_out_in_batches_of_200(store):
