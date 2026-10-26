@@ -11,6 +11,9 @@ import re
 from typing import Literal
 
 CLOSED_NOTICE = "ukončila zverejnenie ponuky"
+APPLY_BUTTON = "Reagovať na ponuku"
+"""Shown on open postings only. Required for "open" so that a challenge page
+with a title of its own is reported as unchecked rather than as open."""
 
 PostingState = Literal["closed", "open", "unknown"]
 
@@ -29,4 +32,6 @@ def posting_state(status: int, html: str) -> PostingState:
     """
     if status != 200 or "<h1" not in html.lower():
         return "unknown"
-    return "closed" if is_closed(html) else "open"
+    if is_closed(html):
+        return "closed"
+    return "open" if APPLY_BUTTON in html else "unknown"

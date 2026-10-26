@@ -37,6 +37,12 @@ def test_a_page_without_a_title_is_unknown():
     assert posting_state(200, "<html><body>Please verify you are human</body></html>") == "unknown"
 
 
+def test_a_titled_page_without_notice_or_apply_button_is_unknown():
+    # Found in final review: a Cloudflare challenge has an <h1> too ("Just a moment...").
+    # Calling it "open" would hide a day the check never really ran.
+    assert posting_state(200, "<html><body><h1>Just a moment...</h1></body></html>") == "unknown"
+
+
 def test_a_closed_posting_is_closed():
     assert posting_state(200, CLOSED) == "closed"
 
