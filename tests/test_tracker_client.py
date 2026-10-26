@@ -73,6 +73,47 @@ def test_a_network_failure_never_shows_the_token():
     assert raised.value.__cause__ is None
 
 
+def test_offers_to_check_gets_the_list_with_the_token_header():
+    offers = [{"external_id": "O5330945", "url": "https://www.profesia.sk/praca/builtmind/O5330945"}]
+    seen: list[httpx.Request] = []
+
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(200, json={"vacancies": offers})
+
+    assert client_with(handler).offers_to_check() == offers
+    assert seen[0].method == "GET"
+    assert seen[0].url.path == "/api/v1/vacancies/to-check/"
+    assert seen[0].headers["Authorization"] == f"Token {TOKEN}"
+
+
+def test_report_closed_posts_the_items():
+    items = [{"external_id": "O1", "seen_at": "2026-10-27T08:20:00+00:00"}]
+    results = [{"external_id": "O1", "status": "closed"}]
+    seen, handler = answering(results)
+
+    assert client_with(handler).report_closed(items) == results
+    assert seen[0].method == "POST"
+    assert seen[0].url.path == "/api/v1/vacancies/closed/"
+    assert seen[0].headers["Authorization"] == f"Token {TOKEN}"
+    assert json.loads(seen[0].content) == {"closed": items}
+
+
+def test_a_refused_to_check_is_an_error_with_its_status():
+    _, handler = answering([], status=401)
+    with pytest.raises(TrackerError) as raised:
+        client_with(handler).offers_to_check()
+    assert raised.value.status == 401
+
+
+def test_a_garbled_to_check_answer_is_an_error():
+    def handler(request):
+        return httpx.Response(200, text="<html>proxy page</html>")
+
+    with pytest.raises(TrackerError):
+        client_with(handler).offers_to_check()
+
+
 def test_a_garbled_answer_is_an_error():
     def handler(request):
         return httpx.Response(200, text="<html>proxy page</html>")

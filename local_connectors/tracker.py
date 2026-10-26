@@ -1,4 +1,4 @@
-"""job-apply-tracker's ingest API over plain httpx.
+"""job-apply-tracker's API over plain httpx.
 
 The token travels in a header, not the URL, but errors are still scrubbed of
 it: an exception text is the one thing that reliably ends up in a log.
@@ -11,6 +11,8 @@ import httpx
 from local_connectors.telegram import redact
 
 INGEST_PATH = "/api/v1/vacancies/"
+TO_CHECK_PATH = "/api/v1/vacancies/to-check/"
+CLOSED_PATH = "/api/v1/vacancies/closed/"
 
 
 class TrackerError(Exception):
@@ -22,7 +24,7 @@ class TrackerError(Exception):
 
 class TrackerClient:
     def __init__(self, base_url: str, token: str, client: httpx.Client | None = None) -> None:
-        self._url = base_url.rstrip("/") + INGEST_PATH
+        self._base = base_url.rstrip("/")
         self._token = token
         self._client = client or httpx.Client(timeout=30)
 
@@ -30,10 +32,20 @@ class TrackerClient:
         self._client.close()
 
     def push(self, vacancies: list[dict]) -> list[dict]:
+        return self._call("POST", INGEST_PATH, {"vacancies": vacancies}).get("results", [])
+
+    def offers_to_check(self) -> list[dict]:
+        return self._call("GET", TO_CHECK_PATH).get("vacancies", [])
+
+    def report_closed(self, closed: list[dict]) -> list[dict]:
+        return self._call("POST", CLOSED_PATH, {"closed": closed}).get("results", [])
+
+    def _call(self, method: str, path: str, body: dict | None = None) -> dict[str, Any]:
         try:
-            response = self._client.post(
-                self._url,
-                json={"vacancies": vacancies},
+            response = self._client.request(
+                method,
+                self._base + path,
+                json=body,
                 headers={"Authorization": f"Token {self._token}"},
             )
         except httpx.HTTPError as error:
@@ -46,7 +58,9 @@ class TrackerClient:
                 status=response.status_code,
             )
         try:
-            body: dict[str, Any] = response.json()
+            answer = response.json()
         except ValueError:
             raise TrackerError("200 but the answer is not JSON", status=200) from None
-        return body.get("results", [])
+        if not isinstance(answer, dict):
+            raise TrackerError("200 but the answer is not a JSON object", status=200)
+        return answer

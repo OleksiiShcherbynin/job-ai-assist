@@ -203,6 +203,15 @@ class ProfesiaSource:
         body = soup.select_one(".job-ad__desc, .main-content, article, main, body")
         return body.get_text(separator=" ", strip=True) if body else ""
 
+    def fetch_page(self, url: str) -> tuple[int, str]:
+        """Status and untouched HTML, for a caller that has to tell a closed
+        posting from an error page. No pause here: the caller sets the pace."""
+        if not _is_allowed_host(url):
+            raise ValueError(f"refusing to fetch outside Profesia: {url}")
+
+        response = self._client.get(url)
+        return response.status_code, response.text
+
     def fetch_vacancies(self, limit: int = 15) -> list[dict]:
         """Cards and postings in one call, in the shape the notebook expects.
 

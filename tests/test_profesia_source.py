@@ -85,6 +85,28 @@ def test_fetch_vacancies_still_serves_the_notebook():
     assert "Body text." in postings[0]["text"]
 
 
+def test_fetch_page_returns_status_and_raw_html():
+    body = "<html><body><h1>Junior Developer</h1><script>x()</script></body></html>"
+    source = source_with(lambda request: httpx.Response(200, text=body))
+
+    assert source.fetch_page("https://www.profesia.sk/praca/acme/O5000001") == (200, body)
+
+
+def test_fetch_page_hands_back_a_non_200_instead_of_raising():
+    source = source_with(lambda request: httpx.Response(404, text="gone"))
+
+    assert source.fetch_page("https://www.profesia.sk/praca/acme/O5000001") == (404, "gone")
+
+
+def test_fetch_page_refuses_a_host_outside_profesia():
+    requested = []
+    source = source_with(lambda request: requested.append(request) or httpx.Response(200))
+
+    with pytest.raises(ValueError):
+        source.fetch_page("https://profesia.sk.evil.com/praca/acme/O5000001")
+    assert requested == []
+
+
 def test_detail_refuses_a_host_outside_profesia():
     source = source_with(lambda request: httpx.Response(200, text="<html></html>"))
 
