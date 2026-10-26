@@ -60,7 +60,8 @@ class Messenger(Protocol):
 
 @runtime_checkable
 class VacancyTracker(Protocol):
-    """Where scored vacancies go once judged (job-apply-tracker's ingest API).
+    """job-apply-tracker: where scored vacancies go once judged, and which
+    offers it wants checked for closure.
 
     Batches are plain dicts in the tracker's own contract: the shape belongs to
     the other system, and mirroring it in a model here would only drift.
@@ -68,4 +69,12 @@ class VacancyTracker(Protocol):
 
     def push(self, vacancies: list[dict]) -> list[dict]:
         """Sends one batch; returns the tracker's per-item results in order."""
+        ...
+
+    def offers_to_check(self) -> list[dict]:
+        """Offers whose posting the tracker wants checked: external_id, url."""
+        ...
+
+    def report_closed(self, closed: list[dict]) -> list[dict]:
+        """Sends closed offers (external_id, seen_at); returns per-item results."""
         ...
