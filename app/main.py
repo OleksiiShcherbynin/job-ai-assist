@@ -17,6 +17,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from app.bot import Bot
+from app.closure_check import check_closures
 from app.config import RunConfig, load_config
 from app.gemini import GeminiJudge
 from app.pacing import Pacer
@@ -145,15 +146,37 @@ def push_to_tracker(config: RunConfig, tracker: VacancyTracker) -> None:
         if result.sent:
             log.info("sent %d vacancies to the tracker: %d accepted, %d refused",
                      result.sent, result.accepted, result.invalid)
-    except TrackerError as error:
-        if error.status in (401, 403):
-            log.warning("the tracker rejected the token; check TRACKER_API_TOKEN in .env "
-                        "and restart with `docker compose up -d` (%s)", error)
-        else:
-            log.warning("could not reach the tracker; will retry on the next check (%s)", error)
     except Exception as error:
-        log.warning("could not reach the tracker; will retry on the next check (%s)", error)
+        _warn_tracker(error, "could not reach the tracker")
     finally:
+        store.close()
+
+
+def _warn_tracker(error: Exception, what_failed: str) -> None:
+    """One WARNING for a tracker problem, naming the token when that is the cause:
+    "could not reach" would send you to check the network instead."""
+    if isinstance(error, TrackerError) and error.status in (401, 403):
+        log.warning("the tracker rejected the token; check TRACKER_API_TOKEN in .env "
+                    "and restart with `docker compose up -d` (%s)", error)
+    else:
+        log.warning("%s; will retry on the next check (%s)", what_failed, error)
+
+
+def check_closed_postings(config: RunConfig, tracker: VacancyTracker, today: date) -> None:
+    """Reports the tracker's offers that Profesia has closed, once a day.
+    Like the push, a problem here never becomes a run problem."""
+    store = Store(config.state_path)
+    source = ProfesiaSource()  # only its client and headers are used: no listing is read
+    try:
+        result = check_closures(store, tracker, source, today)
+        if result.fetched or result.reported:
+            log.info("checked %d postings on Profesia: %d closed, %d skipped; "
+                     "reported %d to the tracker",
+                     result.fetched, result.closed, result.skipped, result.reported)
+    except Exception as error:
+        _warn_tracker(error, "could not check closed postings")
+    finally:
+        source.close()
         store.close()
 
 
@@ -312,6 +335,9 @@ def main(argv: list[str] | None = None) -> int:
         # After Telegram on purpose: the morning report never waits for the tracker.
         if tracker is not None:
             push_to_tracker(config, tracker)
+            # After the push: a vacancy scored today exists in the tracker before
+            # anyone asks whether its posting closed.
+            check_closed_postings(config, tracker, today)
 
         if args.once:
             # In the loop a failed run just waits for the next check. With --once

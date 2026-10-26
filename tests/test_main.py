@@ -300,6 +300,12 @@ class FakeTracker:
         return [{"external_id": item["external_id"], "status": "created", "id": 1}
                 for item in vacancies]
 
+    def offers_to_check(self):
+        return []
+
+    def report_closed(self, closed):
+        return []
+
 
 def with_tracker(monkeypatch, tmp_path, tracker, report, events=None):
     import app.main as main_module
@@ -419,3 +425,124 @@ def test_a_rejected_token_says_so(tmp_path, monkeypatch, report, caplog, status)
     assert main_module.main(["--once"]) == 0
     assert "rejected the token" in caplog.text
     assert "TRACKER_API_TOKEN" in caplog.text
+
+
+# --- closed postings check ---
+
+from pathlib import Path  # noqa: E402
+
+CLOSED_PAGE = (Path(__file__).parent / "fixtures" / "profesia_posting_closed.html").read_text(encoding="utf-8")
+O1_URL = "https://www.profesia.sk/praca/acme/O1"
+
+
+class CheckingTracker(FakeTracker):
+    def __init__(self, fail_with=None, check_fails_with=None, order=None):
+        super().__init__(fail_with)
+        self.check_fails_with, self.order = check_fails_with, order if order is not None else []
+        self.reported: list[dict] = []
+
+    def push(self, vacancies):
+        self.order.append("push")
+        return super().push(vacancies)
+
+    def offers_to_check(self):
+        self.order.append("to-check")
+        if self.check_fails_with:
+            raise self.check_fails_with
+        return [{"external_id": "O1", "url": O1_URL}]
+
+    def report_closed(self, closed):
+        self.reported.extend(closed)
+        return [{"external_id": item["external_id"], "status": "closed"} for item in closed]
+
+
+class PageSource:
+    def __init__(self, *args, **kwargs):
+        self.closed = False
+
+    def fetch_page(self, url):
+        return 200, CLOSED_PAGE
+
+    def close(self):
+        self.closed = True
+
+
+def with_closure_check(monkeypatch, tmp_path, tracker, report):
+    main_module = with_tracker(monkeypatch, tmp_path, tracker, report)
+    monkeypatch.setattr(main_module, "ProfesiaSource", PageSource)
+    monkeypatch.setattr("app.closure_check.time.sleep", lambda seconds: None)
+    return main_module
+
+
+def test_closed_postings_are_reported_after_the_push(tmp_path, monkeypatch, report, caplog):
+    tracker = CheckingTracker()
+    main_module = with_closure_check(monkeypatch, tmp_path, tracker, report)
+
+    with caplog.at_level(logging.INFO):
+        assert main_module.main(["--once"]) == 0
+
+    assert [item["external_id"] for item in tracker.reported] == ["O1"]
+    assert "1 closed" in caplog.text
+
+
+def test_the_closure_check_runs_after_the_tracker_push(tmp_path, monkeypatch, report):
+    tracker = CheckingTracker()
+    main_module = with_closure_check(monkeypatch, tmp_path, tracker, report)
+
+    main_module.main(["--once"])
+
+    assert tracker.order == ["push", "to-check"]
+
+
+def test_a_closure_check_failure_does_not_fail_the_run(tmp_path, monkeypatch, report, caplog):
+    from local_connectors.tracker import TrackerError
+
+    tracker = CheckingTracker(check_fails_with=TrackerError("ConnectError: refused"))
+    main_module = with_closure_check(monkeypatch, tmp_path, tracker, report)
+
+    assert main_module.main(["--once"]) == 0
+    assert "could not check closed postings" in caplog.text
+    assert Store(config_at(tmp_path).state_path).closure_checked_on() is None
+
+
+def test_an_unexpected_closure_check_error_does_not_fail_the_run(tmp_path, monkeypatch, report, caplog):
+    tracker = CheckingTracker(check_fails_with=RuntimeError("boom with tracker-token"))
+    main_module = with_closure_check(monkeypatch, tmp_path, tracker, report)
+
+    assert main_module.main(["--once"]) == 0
+    assert "could not check closed postings" in caplog.text
+    assert "tracker-token" not in caplog.text
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_a_rejected_token_on_the_closure_check_says_so(tmp_path, monkeypatch, report, caplog, status):
+    from local_connectors.tracker import TrackerError
+
+    tracker = CheckingTracker(check_fails_with=TrackerError(f"{status} Unauthorized", status=status))
+    main_module = with_closure_check(monkeypatch, tmp_path, tracker, report)
+
+    assert main_module.main(["--once"]) == 0
+    assert "rejected the token" in caplog.text
+
+
+def test_the_closure_check_is_off_without_tracker_settings(tmp_path, monkeypatch, report):
+    import app.main as main_module
+
+    monkeypatch.setenv("GOOGLE_API_KEY", "x")
+    monkeypatch.setattr(main_module, "load_dotenv", lambda *a, **k: None)
+    monkeypatch.setattr(main_module, "load_config", lambda path: config_at(tmp_path))
+    monkeypatch.setattr(main_module, "run_today", lambda config, today: report)
+    monkeypatch.setattr(main_module, "ProfesiaSource",
+                        lambda *a, **k: pytest.fail("no tracker, no closure check"))
+
+    assert main_module.main(["--once"]) == 0
+
+
+def test_the_closure_check_does_not_need_todays_run(tmp_path, monkeypatch, report):
+    tracker = CheckingTracker()
+    main_module = with_closure_check(monkeypatch, tmp_path, tracker, report)
+    monkeypatch.setattr(main_module, "run_today",
+                        lambda config, today: (_ for _ in ()).throw(RuntimeError("profesia down")))
+
+    assert main_module.main(["--once"]) == 1
+    assert [item["external_id"] for item in tracker.reported] == ["O1"]
