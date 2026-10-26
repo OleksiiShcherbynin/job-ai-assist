@@ -68,7 +68,14 @@ CREATE TABLE IF NOT EXISTS tracker_outbox (
     offer_id  TEXT PRIMARY KEY,
     queued_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS closed_outbox (
+    offer_id TEXT PRIMARY KEY,
+    seen_at  TEXT NOT NULL
+);
 """
+
+_CLOSURE_CHECKED_ON = "closure_checked_on"
 
 # Statuses that carry a score; only these are worth sending to job-apply-tracker.
 _SCORED = ("scored-rough", "scored-final")
@@ -332,6 +339,41 @@ class Store:
         self._connection.commit()
         self.set_state("tracker_backlog_queued", datetime.now(timezone.utc).isoformat())
         return cursor.rowcount
+
+    def closure_checked_on(self) -> date | None:
+        """The last day Profesia was walked for closed postings."""
+        value = self.get_state(_CLOSURE_CHECKED_ON)
+        return date.fromisoformat(value) if value else None
+
+    def finish_closure_check(self, day: date, closed: list[str], seen_at: datetime) -> None:
+        """Marks the day and keeps what it found, in one commit.
+
+        Together on purpose: a day marked without its findings would lose them,
+        and findings without the mark would send Profesia a second walk.
+        """
+        self._connection.executemany(
+            "INSERT INTO closed_outbox (offer_id, seen_at) VALUES (?, ?) "
+            "ON CONFLICT(offer_id) DO NOTHING",
+            [(offer_id, seen_at.isoformat()) for offer_id in closed],
+        )
+        self._connection.execute(
+            "INSERT INTO bot_state (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (_CLOSURE_CHECKED_ON, day.isoformat()),
+        )
+        self._connection.commit()
+
+    def closed_pending(self, limit: int) -> list[sqlite3.Row]:
+        return self._connection.execute(
+            "SELECT offer_id, seen_at FROM closed_outbox ORDER BY seen_at, offer_id LIMIT ?",
+            (limit,),
+        ).fetchall()
+
+    def closed_done(self, offer_ids: list[str]) -> None:
+        self._connection.executemany(
+            "DELETE FROM closed_outbox WHERE offer_id = ?", [(offer_id,) for offer_id in offer_ids]
+        )
+        self._connection.commit()
 
     def get_state(self, key: str) -> str | None:
         row = self._connection.execute("SELECT value FROM bot_state WHERE key = ?", (key,)).fetchone()

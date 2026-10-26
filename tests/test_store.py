@@ -283,3 +283,56 @@ def test_the_backlog_is_queued_once_even_after_reopening(tmp_path):
     second = Store(path)
     assert second.queue_tracker_backlog() == 0
     assert pending_ids(second) == []
+
+
+# --- closed postings check ---
+
+CHECKED = datetime(2026, 10, 27, 8, 20, tzinfo=timezone.utc)
+
+
+def closed_rows(store):
+    return [(row["offer_id"], row["seen_at"]) for row in store.closed_pending(1000)]
+
+
+def test_a_fresh_store_has_never_checked_closures(store):
+    assert store.closure_checked_on() is None
+
+
+def test_a_finished_closure_check_remembers_its_day_and_queues_the_closed_ids(store):
+    store.finish_closure_check(date(2026, 10, 27), ["O2", "O1"], CHECKED)
+
+    assert store.closure_checked_on() == date(2026, 10, 27)
+    assert closed_rows(store) == [("O1", CHECKED.isoformat()), ("O2", CHECKED.isoformat())]
+
+
+def test_a_closed_id_seen_again_keeps_its_first_seen_at(store):
+    # The tracker dates the timeline event with seen_at; the first sighting is the true one.
+    store.finish_closure_check(date(2026, 10, 27), ["O1"], CHECKED)
+    store.finish_closure_check(date(2026, 10, 28), ["O1"], CHECKED.replace(day=28))
+
+    assert closed_rows(store) == [("O1", CHECKED.isoformat())]
+    assert store.closure_checked_on() == date(2026, 10, 28)
+
+
+def test_reported_closures_leave_the_queue(store):
+    store.finish_closure_check(date(2026, 10, 27), ["O1", "O2"], CHECKED)
+    store.closed_done(["O1"])
+
+    assert [offer_id for offer_id, _ in closed_rows(store)] == ["O2"]
+
+
+def test_a_check_with_nothing_closed_still_marks_the_day(store):
+    store.finish_closure_check(date(2026, 10, 27), [], CHECKED)
+
+    assert store.closure_checked_on() == date(2026, 10, 27)
+    assert closed_rows(store) == []
+
+
+def test_the_closure_marker_survives_reopening_the_database(tmp_path):
+    first = Store(tmp_path / "seen.db")
+    first.finish_closure_check(date(2026, 10, 27), ["O1"], CHECKED)
+    first.close()
+
+    second = Store(tmp_path / "seen.db")
+    assert second.closure_checked_on() == date(2026, 10, 27)
+    assert closed_rows(second) == [("O1", CHECKED.isoformat())]
