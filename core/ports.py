@@ -24,6 +24,12 @@ class VacancySource(Protocol):
         does not own."""
         ...
 
+    def fetch_page(self, url: str) -> tuple[int, str]:
+        """A posting page as served: status code and raw HTML. Does not raise
+        on a non-200 answer. Raises ValueError for a host this source does
+        not own."""
+        ...
+
 
 @runtime_checkable
 class Messenger(Protocol):
