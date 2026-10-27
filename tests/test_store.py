@@ -283,3 +283,18 @@ def test_the_backlog_is_queued_once_even_after_reopening(tmp_path):
     second = Store(path)
     assert second.queue_tracker_backlog() == 0
     assert pending_ids(second) == []
+
+
+def test_the_resume_a_verdict_was_judged_against_is_kept(tmp_path):
+    store = Store(tmp_path / "seen.db")
+    store.record(card("O1"), status="scored-final", score=80,
+                 reasons=["fits"], reasons_ru=["подходит"], resume="resume_data_analyst.pdf")
+
+    assert store.verdict("O1").resume == "resume_data_analyst.pdf"
+
+
+def test_a_verdict_without_a_resume_says_none(tmp_path):
+    store = Store(tmp_path / "seen.db")
+    store.record(card("O1"), status="scored-rough", score=50, reasons=["ok"])
+
+    assert store.verdict("O1").resume is None

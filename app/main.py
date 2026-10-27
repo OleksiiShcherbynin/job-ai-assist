@@ -25,6 +25,7 @@ from app.report import LANGUAGES, RunReport, render_markdown, render_telegram_su
 from app.store import Store
 from app.tracker_sync import sync
 from core.models import CandidateProfile
+from core.resumes import Resume, merge_profiles
 from core.ports import Messenger, VacancyTracker
 from local_connectors.llm import extract, is_account_error
 from local_connectors.resume_loader import load_resume_text
@@ -182,16 +183,35 @@ def _clean_resume(text: str) -> str:
     return re.sub(r" {2,}", " ", text).strip()
 
 
-def _summaries(profile: CandidateProfile, config: RunConfig) -> tuple[str, str]:
+def read_resumes(config: RunConfig) -> list[Resume]:
+    """Each resume profiled on its own, one cheap call apiece.
+
+    Separately rather than in one prompt, so neither resume's direction gets
+    folded into the other's.
+    """
+    resumes = []
+    for path in config.resume_paths:
+        text = _clean_resume(load_resume_text(str(path)))
+        profile = extract(text, CandidateProfile, RESUME_INSTRUCTION, model=config.models.extract)
+        resumes.append(Resume(name=path.name, text=text, profile=profile))
+    return resumes
+
+
+def summaries(resumes: list[Resume], config: RunConfig) -> tuple[str, str]:
+    """What the cheap scoring stage knows about the candidate.
+
+    The union of every resume, so a vacancy aimed at either direction scores
+    on it: this stage decides who reaches the judge at all.
+    """
+    profile = merge_profiles([resume.profile for resume in resumes])
     profile_summary = f"{profile.title}, {profile.seniority}, stack: {profile.tech_stack}"
     prefs_summary = f"roles: {config.preferences.desired_roles}"
     return profile_summary, prefs_summary
 
 
 def run_today(config: RunConfig, today: date) -> RunReport:
-    resume_text = _clean_resume(load_resume_text(str(config.resume_path)))
-    profile = extract(resume_text, CandidateProfile, RESUME_INSTRUCTION, model=config.models.extract)
-    profile_summary, prefs_summary = _summaries(profile, config)
+    resumes = read_resumes(config)
+    profile_summary, prefs_summary = summaries(resumes, config)
 
     store = Store(config.state_path)
     source = ProfesiaSource(
@@ -205,8 +225,8 @@ def run_today(config: RunConfig, today: date) -> RunReport:
             source=source,
             store=store,
             pacer=Pacer(store, config),
-            llm=GeminiJudge(config, profile_summary, prefs_summary, resume_text),
-            resume_text=resume_text,
+            llm=GeminiJudge(config, profile_summary, prefs_summary),
+            resumes=resumes,
         )
         report = pipeline.run(today)
     finally:

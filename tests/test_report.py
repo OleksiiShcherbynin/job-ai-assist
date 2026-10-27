@@ -218,3 +218,19 @@ def test_message_length_is_counted_the_way_telegram_counts_it():
 def test_an_unknown_language_is_refused_for_the_summary_too():
     with pytest.raises(ValueError):
         render_telegram_summary(report(), min_score=40, language="sk")
+
+
+@pytest.mark.parametrize("language, phrase", [("en", "Judged against"), ("ru", "Оценено по резюме")])
+def test_the_resume_the_judge_read_is_named(language, phrase):
+    judged = [Judged(card=card(), score=80, reasons=["fits"], reasons_ru=["подходит"],
+                     stage="final", resume="resume_data_analyst.pdf")]
+
+    text = render_markdown(report(judged=judged), min_score=40, language=language)
+
+    assert f"{phrase}: resume_data_analyst.pdf" in text
+
+
+def test_no_resume_line_when_there_was_nothing_to_choose(two_scored):
+    text = render_markdown(report(judged=two_scored), min_score=40)
+
+    assert "Judged against" not in text
