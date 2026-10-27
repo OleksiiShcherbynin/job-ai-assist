@@ -29,6 +29,8 @@ class Judged:
     """'final' if the judge saw the full resume, 'rough' if only a summary."""
     reasons: list[str] = field(default_factory=list)
     reasons_ru: list[str] = field(default_factory=list)
+    resume: str | None = None
+    """The resume file the final judge read; None when there was only one."""
 
     def reasons_in(self, language: str) -> list[str]:
         # Falling back beats printing a vacancy with no explanation at all.
@@ -63,6 +65,7 @@ _PHRASES = {
         "counts": "Seen {seen} · scored {scored} · above {min_score}: {strong} · filtered out {rejected}",
         "nothing": "Nothing scored above the threshold today.",
         "rough_note": "_rough score only — did not reach the final judge_",
+        "resume": "Judged against: {name}",
         "open": "Open the posting",
         "below": "Scored below {min_score} ({count})",
         "filtered": "Filtered out before scoring ({count})",
@@ -74,6 +77,7 @@ _PHRASES = {
         "counts": "Просмотрено {seen} · оценено {scored} · выше {min_score}: {strong} · отсеяно {rejected}",
         "nothing": "Сегодня ничего не набрало проходной балл.",
         "rough_note": "_только грубая оценка — до финального разбора не дошла_",
+        "resume": "Оценено по резюме: {name}",
         "open": "Открыть вакансию",
         "below": "Ниже порога {min_score} ({count})",
         "filtered": "Отсеяно до оценки ({count})",
@@ -97,6 +101,8 @@ def _entry(item: Judged, phrases: dict[str, str], language: str) -> list[str]:
     lines += [f"- {reason}" for reason in item.reasons_in(language)]
     if item.stage != "final":
         lines.append(f"- {phrases['rough_note']}")
+    if item.resume:
+        lines.append(f"- _{phrases['resume'].format(name=item.resume)}_")
     lines += ["", f"[{phrases['open']}]({item.card.url})", ""]
     return lines
 

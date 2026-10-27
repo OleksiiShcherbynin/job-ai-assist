@@ -62,7 +62,12 @@ rough_score = "gemini-3.5-flash-lite"
 final_judge = "gemini-3.5-flash"
 
 [run]
-resume_path = "data/CV_OleksiiShcherbynin.pdf"
+# One resume per direction. Each is profiled on its own and the profiles are
+# joined, so the cheap scoring stage rates a vacancy against everything you
+# claim. The final judge reads one of them per vacancy, picked by which stack
+# and title the posting mentions most; a tie goes to the first listed.
+# A single resume can still be given as resume_path = "...".
+resume_paths = ["data/resume.pdf", "data/resume_data_analyst.pdf"]
 state_path = "state/seen.db"
 report_dir = "reports"
 

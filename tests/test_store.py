@@ -113,6 +113,19 @@ def test_reading_a_verdict_that_was_never_recorded_gives_nothing(store):
     assert store.verdict("O9999999") is None
 
 
+def test_the_resume_a_verdict_was_judged_against_is_kept(store):
+    store.record(card("O1"), status="scored-final", score=80,
+                 reasons=["fits"], reasons_ru=["подходит"], resume="resume_data_analyst.pdf")
+
+    assert store.verdict("O1").resume == "resume_data_analyst.pdf"
+
+
+def test_a_verdict_without_a_resume_says_none(store):
+    store.record(card("O1"), status="scored-rough", score=50, reasons=["ok"])
+
+    assert store.verdict("O1").resume is None
+
+
 def test_no_calls_are_counted_before_any_are_made(store):
     assert store.calls_used("gemini-3.5-flash") == 0
 

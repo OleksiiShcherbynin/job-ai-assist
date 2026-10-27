@@ -6,6 +6,7 @@ tests exercise the policy without either.
 
 from app.config import RunConfig
 from core.models import MatchResult, Vacancy, VacancyCard
+from core.resumes import Resume
 from local_connectors.llm import extract, judge_match, score_match
 
 VACANCY_INSTRUCTION = (
@@ -23,11 +24,10 @@ times; the pipeline retries instead, and it paces."""
 
 
 class GeminiJudge:
-    def __init__(self, config: RunConfig, profile_summary: str, prefs_summary: str, resume_text: str) -> None:
+    def __init__(self, config: RunConfig, profile_summary: str, prefs_summary: str) -> None:
         self._config = config
         self._profile_summary = profile_summary
         self._prefs_summary = prefs_summary
-        self._resume_text = resume_text
 
     def extract_vacancy(self, text: str) -> Vacancy:
         return extract(text, Vacancy, VACANCY_INSTRUCTION, model=self._config.models.extract,
@@ -42,10 +42,10 @@ class GeminiJudge:
             max_attempts=SINGLE_ATTEMPT,
         )
 
-    def final_judge(self, vacancy: Vacancy, card: VacancyCard) -> MatchResult:
+    def final_judge(self, vacancy: Vacancy, card: VacancyCard, resume: Resume) -> MatchResult:
         return judge_match(
             vacancy.raw_text or card.title,
-            self._resume_text,
+            resume.text,
             self._prefs_summary,
             model=self._config.models.final_judge,
             max_attempts=SINGLE_ATTEMPT,

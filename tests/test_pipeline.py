@@ -6,7 +6,8 @@ from app.config import ModelQuota, ModelRoles, RunConfig
 from app.pacing import Pacer
 from app.pipeline import Pipeline
 from app.store import Store
-from core.models import MatchResult, SearchPreferences, Vacancy, VacancyCard
+from core.models import CandidateProfile, MatchResult, SearchPreferences, Vacancy, VacancyCard
+from core.resumes import Resume
 
 DAY = date(2026, 9, 10)
 EXTRACT, ROUGH, JUDGE = "extract-model", "rough-model", "judge-model"
@@ -47,6 +48,7 @@ class FakeLLM:
         self.extracted: list[str] = []
         self.roughly_scored: list[str] = []
         self.judged: list[str] = []
+        self.judged_against: list[str] = []
 
     def extract_vacancy(self, text):
         self.extracted.append(text)
@@ -57,10 +59,11 @@ class FakeLLM:
         score = self.rough_scores.get(card.offer_id, 70)
         return MatchResult(score=score, reasons=["rough"], reasons_ru=["грубо"])
 
-    def final_judge(self, vacancy, card):
+    def final_judge(self, vacancy, card, resume):
         if self.judge_raises:
             raise self.judge_raises
         self.judged.append(card.offer_id)
+        self.judged_against.append(resume.name)
         return MatchResult(score=90, reasons=["judged"], reasons_ru=["разобрано"])
 
 
@@ -75,7 +78,10 @@ class FrozenClock:
         self.now += seconds
 
 
-def build(tmp_path, cards, llm=None, failing=None, **overrides):
+ONE_RESUME = [Resume(name="cv.pdf", text="cv text", profile=CandidateProfile(title="Junior Developer"))]
+
+
+def build(tmp_path, cards, llm=None, failing=None, resumes=ONE_RESUME, **overrides):
     settings = dict(
         min_score=40,
         final_judge_limit=2,
@@ -85,7 +91,7 @@ def build(tmp_path, cards, llm=None, failing=None, **overrides):
     settings.update(overrides)
 
     config = RunConfig(
-        resume_path=tmp_path / "cv.pdf",
+        resume_paths=(tmp_path / "cv.pdf",),
         state_path=tmp_path / "seen.db",
         report_dir=tmp_path / "reports",
         list_url="https://example.invalid/",
@@ -112,6 +118,7 @@ def build(tmp_path, cards, llm=None, failing=None, **overrides):
         store=store,
         pacer=Pacer(store, config, clock=clock.time, sleeper=clock.sleep),
         llm=llm,
+        resumes=resumes,
     )
     return pipeline, source, store, llm
 
@@ -274,11 +281,11 @@ class BusyJudgeLLM(FakeLLM):
         self.failures = failures
         self.attempts = 0
 
-    def final_judge(self, vacancy, card):
+    def final_judge(self, vacancy, card, resume):
         self.attempts += 1
         if self.attempts <= self.failures:
             raise RuntimeError(BUSY_MINUTE)
-        return super().final_judge(vacancy, card)
+        return super().final_judge(vacancy, card, resume)
 
 
 def test_a_busy_minute_is_waited_out_rather_than_losing_the_judgement(tmp_path):
@@ -318,3 +325,64 @@ def test_what_was_processed_is_remembered_for_tomorrow(tmp_path):
     pipeline.run(DAY)
 
     assert store.is_new("O1") is False
+
+
+# --- two resumes ---
+
+TWO_RESUMES = [
+    Resume(name="resume.pdf", text="engineer text",
+           profile=CandidateProfile(title="Junior Software Engineer", tech_stack=["Java", "Docker"])),
+    Resume(name="resume_data_analyst.pdf", text="analyst text",
+           profile=CandidateProfile(title="Junior Data Analyst", tech_stack=["Power BI", "pandas"])),
+]
+
+
+class RoleLLM(FakeLLM):
+    """Extracts a vacancy whose role and stack are set per offer id."""
+
+    def __init__(self, vacancies, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.vacancies = vacancies
+
+    def extract_vacancy(self, text):
+        self.extracted.append(text)
+        offer_id = text.rsplit("/", 1)[-1]
+        return self.vacancies[offer_id].model_copy(update={"raw_text": text})
+
+
+def test_each_finalist_is_judged_against_the_resume_it_suits(tmp_path):
+    llm = RoleLLM({
+        "O1": Vacancy(role="Data Analyst", tech_stack=["Power BI"]),
+        "O2": Vacancy(role="Java Developer", tech_stack=["Java", "Docker"]),
+    })
+    pipeline, _, _, llm = build(tmp_path, [card("O1"), card("O2")], llm=llm, resumes=TWO_RESUMES)
+
+    report = pipeline.run(DAY)
+
+    assert dict(zip(llm.judged, llm.judged_against)) == {
+        "O1": "resume_data_analyst.pdf", "O2": "resume.pdf",
+    }
+    assert {item.card.offer_id: item.resume for item in report.judged} == {
+        "O1": "resume_data_analyst.pdf", "O2": "resume.pdf",
+    }
+
+
+def test_with_one_resume_the_report_does_not_name_it(tmp_path):
+    """There is nothing to choose between, so a file name would only be noise."""
+    pipeline, _, _, llm = build(tmp_path, [card("O1")])
+
+    report = pipeline.run(DAY)
+
+    assert llm.judged_against == ["cv.pdf"]
+    assert report.judged[0].resume is None
+
+
+def test_a_repost_keeps_the_resume_its_original_was_judged_against(tmp_path):
+    llm = RoleLLM({"O1": Vacancy(role="Data Analyst", tech_stack=["Power BI"])})
+    first, _, store, _ = build(tmp_path, [card("O1")], llm=llm, resumes=TWO_RESUMES)
+    first.run(DAY)
+
+    again, _, _, _ = build(tmp_path, [card("O9")], llm=FakeLLM(), resumes=TWO_RESUMES)
+    report = again.run(DAY)
+
+    assert report.judged[0].resume == "resume_data_analyst.pdf"

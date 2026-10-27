@@ -118,6 +118,43 @@ def test_omitted_settings_fall_back_to_defaults(tmp_path):
     assert config.stop_page >= 1
 
 
+def test_a_single_resume_path_still_works(tmp_path):
+    config = load_config(write(tmp_path, MINIMAL))
+
+    assert config.resume_paths == (tmp_path / "data" / "CV.pdf",)
+
+
+def test_several_resumes_are_read_in_order(tmp_path):
+    config = load_config(write(tmp_path, """
+[run]
+resume_paths = ["data/resume.pdf", "data/resume_data_analyst.pdf"]
+"""))
+
+    assert config.resume_paths == (
+        tmp_path / "data" / "resume.pdf",
+        tmp_path / "data" / "resume_data_analyst.pdf",
+    )
+
+
+def test_both_resume_settings_at_once_is_refused(tmp_path):
+    """Silently preferring one would leave the user wondering why the other
+    resume never shows up in the report."""
+    with pytest.raises(ValueError, match="resume_paths"):
+        load_config(write(tmp_path, """
+[run]
+resume_path = "data/a.pdf"
+resume_paths = ["data/b.pdf"]
+"""))
+
+
+def test_an_empty_resume_list_is_refused(tmp_path):
+    with pytest.raises(ValueError, match="resume_paths"):
+        load_config(write(tmp_path, """
+[run]
+resume_paths = []
+"""))
+
+
 def test_a_missing_config_file_says_which_path_was_tried(tmp_path):
     missing = tmp_path / "nope.toml"
 

@@ -22,6 +22,7 @@ from app.store import Store
 from core.logic import card_rejection_reason, rejection_reason
 from core.models import MatchResult, Vacancy, VacancyCard
 from core.ports import VacancySource
+from core.resumes import Resume, pick_resume
 
 log = logging.getLogger(__name__)
 
@@ -36,7 +37,7 @@ class VacancyJudge(Protocol):
 
     def extract_vacancy(self, text: str) -> Vacancy: ...
     def rough_score(self, vacancy: Vacancy, card: VacancyCard) -> MatchResult: ...
-    def final_judge(self, vacancy: Vacancy, card: VacancyCard) -> MatchResult: ...
+    def final_judge(self, vacancy: Vacancy, card: VacancyCard, resume: Resume) -> MatchResult: ...
 
 
 @dataclass
@@ -69,14 +70,14 @@ class Pipeline:
         store: Store,
         pacer: Pacer,
         llm: VacancyJudge,
-        resume_text: str = "",
+        resumes: list[Resume],
     ) -> None:
         self.config = config
         self.source = source
         self.store = store
         self.pacer = pacer
         self.llm = llm
-        self.resume_text = resume_text
+        self.resumes = resumes
 
     def run(self, day: date) -> RunReport:
         report = RunReport(day=day, seen=0)
@@ -137,10 +138,11 @@ class Pipeline:
                 stage=stage,
                 reasons=verdict.reasons,
                 reasons_ru=verdict.reasons_ru,
+                resume=verdict.resume,
             ))
             self.store.record(
                 card, status=f"repost-of-{original}", score=verdict.score,
-                reasons=verdict.reasons, reasons_ru=verdict.reasons_ru,
+                reasons=verdict.reasons, reasons_ru=verdict.reasons_ru, resume=verdict.resume,
             )
         return kept
 
@@ -212,9 +214,12 @@ class Pipeline:
                 ))
                 continue
 
+            # The judge reads one resume, never all of them: two in one prompt
+            # blur the judgement, one call each halves the finalists.
+            resume = pick_resume(candidate.vacancy, self.resumes)
             verdict = self._spend(
                 self.config.models.final_judge, budget,
-                self.llm.final_judge, candidate.vacancy, candidate.card,
+                self.llm.final_judge, candidate.vacancy, candidate.card, resume,
             )
             if isinstance(verdict, Exception):
                 # The rough score already stands in the report; say why it was
@@ -225,10 +230,12 @@ class Pipeline:
                 ))
                 continue
 
-            self._replace_verdict(report, candidate.card, verdict)
+            # With a single resume there is no choice to report.
+            named = resume.name if len(self.resumes) > 1 else None
+            self._replace_verdict(report, candidate.card, verdict, named)
             self.store.record(
                 candidate.card, status="scored-final", score=verdict.score,
-                reasons=verdict.reasons, reasons_ru=verdict.reasons_ru,
+                reasons=verdict.reasons, reasons_ru=verdict.reasons_ru, resume=named,
             )
 
     def _spend(self, model: str, budget: _Budget, call, *args):
@@ -261,12 +268,14 @@ class Pipeline:
                 self.pacer.record(model)
                 budget.spend()
 
-    def _replace_verdict(self, report: RunReport, card: VacancyCard, verdict: MatchResult) -> None:
+    def _replace_verdict(
+        self, report: RunReport, card: VacancyCard, verdict: MatchResult, resume: str | None
+    ) -> None:
         for index, item in enumerate(report.judged):
             if item.card.offer_id == card.offer_id:
                 report.judged[index] = Judged(
                     card=card, score=verdict.score, stage="final",
-                    reasons=verdict.reasons, reasons_ru=verdict.reasons_ru,
+                    reasons=verdict.reasons, reasons_ru=verdict.reasons_ru, resume=resume,
                 )
                 return
 

@@ -5,7 +5,8 @@ from types import SimpleNamespace
 import app.gemini as gemini_module
 from app.config import ModelRoles
 from app.gemini import GeminiJudge
-from core.models import MatchResult, Vacancy, VacancyCard
+from core.models import CandidateProfile, MatchResult, Vacancy, VacancyCard
+from core.resumes import Resume
 from local_connectors.llm import _FENCE, judge_prompt, score_prompt
 
 
@@ -23,11 +24,11 @@ def test_every_stage_asks_the_client_for_a_single_attempt(monkeypatch):
     monkeypatch.setattr(gemini_module, "judge_match", capture)
     monkeypatch.setattr(gemini_module, "extract", lambda *a, **kw: asked.append(kw) or Vacancy())
 
-    judge = GeminiJudge(SimpleNamespace(models=ModelRoles()), "profile", "prefs", "resume")
+    judge = GeminiJudge(SimpleNamespace(models=ModelRoles()), "profile", "prefs")
     card = VacancyCard(offer_id="O1", title="Junior", url="https://example.invalid/O1")
     judge.extract_vacancy("posting text")
     judge.rough_score(Vacancy(raw_text="text"), card)
-    judge.final_judge(Vacancy(raw_text="text"), card)
+    judge.final_judge(Vacancy(raw_text="text"), card, Resume("cv.pdf", "resume", CandidateProfile()))
 
     assert [call.get("max_attempts") for call in asked] == [1, 1, 1]
 

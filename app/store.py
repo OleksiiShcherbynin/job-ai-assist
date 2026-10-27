@@ -99,6 +99,8 @@ class Verdict:
     score: int | None
     reasons: list[str] = field(default_factory=list)
     reasons_ru: list[str] = field(default_factory=list)
+    resume: str | None = None
+    """The resume file the judge read, when there was more than one to pick from."""
 
 
 @dataclass
@@ -153,13 +155,19 @@ class Store:
         score: int | None = None,
         reasons: list[str] | None = None,
         reasons_ru: list[str] | None = None,
+        resume: str | None = None,
         moment: datetime | None = None,
     ) -> None:
         now = (moment or datetime.now(timezone.utc)).isoformat()
         # None means "this write says nothing about the reasons", which the
         # upsert below preserves. An empty list means "there are none".
+        # The resume travels with the reasons: both describe one judgement, and
+        # a repost inherits them together.
+        verdict = {"en": reasons or [], "ru": reasons_ru or []}
+        if resume:
+            verdict["resume"] = resume
         reasons_json = (
-            json.dumps({"en": reasons or [], "ru": reasons_ru or []}, ensure_ascii=False)
+            json.dumps(verdict, ensure_ascii=False)
             if reasons is not None or reasons_ru is not None
             else None
         )
@@ -225,6 +233,7 @@ class Store:
             score=row["score"],
             reasons=reasons.get("en", []),
             reasons_ru=reasons.get("ru", []),
+            resume=reasons.get("resume"),
         )
 
     def find_repost(self, card: VacancyCard) -> str | None:
