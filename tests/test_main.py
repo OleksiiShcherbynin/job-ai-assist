@@ -465,4 +465,3 @@ def test_a_rejected_token_says_so(tmp_path, monkeypatch, report, caplog, status)
     assert main_module.main(["--once"]) == 0
     assert "rejected the token" in caplog.text
     assert "TRACKER_API_TOKEN" in caplog.text
-
