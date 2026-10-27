@@ -85,6 +85,52 @@ def test_rerunning_the_same_day_overwrites_rather_than_piling_up(tmp_path, repor
     assert len(list(config.report_dir.glob("*.md"))) == 2
 
 
+# --- several resumes ---
+
+
+def test_every_resume_is_read_and_profiled_on_its_own(tmp_path, monkeypatch):
+    import os
+
+    import app.main as main_module
+    from core.models import CandidateProfile
+
+    texts = {"a.pdf": "engineer resume", "b.pdf": "analyst resume"}
+    profiles = {"engineer resume": CandidateProfile(title="Junior Software Engineer", tech_stack=["Java"]),
+                "analyst resume": CandidateProfile(title="Junior Data Analyst", tech_stack=["Power BI"])}
+    extracted = []
+
+    def fake_extract(text, schema, instruction, model):
+        extracted.append(text)
+        return profiles[text]
+
+    monkeypatch.setattr(main_module, "load_resume_text", lambda path: texts[os.path.basename(path)])
+    monkeypatch.setattr(main_module, "extract", fake_extract)
+    config = config_at(tmp_path)
+    config = type(config)(**{**config.__dict__, "resume_paths": (tmp_path / "a.pdf", tmp_path / "b.pdf")})
+
+    resumes = main_module.read_resumes(config)
+
+    assert [resume.name for resume in resumes] == ["a.pdf", "b.pdf"]
+    assert extracted == ["engineer resume", "analyst resume"], "one extraction per resume, never both at once"
+    assert resumes[1].text == "analyst resume"
+
+
+def test_the_rough_score_sees_every_resumes_direction(tmp_path):
+    import app.main as main_module
+    from core.models import CandidateProfile
+    from core.resumes import Resume
+
+    resumes = [
+        Resume("a.pdf", "x", CandidateProfile(title="Junior Software Engineer", seniority="junior", tech_stack=["Java"])),
+        Resume("b.pdf", "y", CandidateProfile(title="Junior Data Analyst", tech_stack=["Power BI"])),
+    ]
+
+    profile_summary, _ = main_module.summaries(resumes, config_at(tmp_path))
+
+    assert "Junior Software Engineer / Junior Data Analyst" in profile_summary
+    assert "Java" in profile_summary and "Power BI" in profile_summary
+
+
 DEPLETED = ("429 RESOURCE_EXHAUSTED. {'error': {'message': 'Your prepayment credits are "
             "depleted. Please go to AI Studio at https://ai.studio/projects'}}")
 
@@ -420,48 +466,3 @@ def test_a_rejected_token_says_so(tmp_path, monkeypatch, report, caplog, status)
     assert "rejected the token" in caplog.text
     assert "TRACKER_API_TOKEN" in caplog.text
 
-
-# --- several resumes ---
-
-from pathlib import Path  # noqa: E402
-
-from core.models import CandidateProfile  # noqa: E402
-
-
-def test_every_resume_is_read_and_profiled_on_its_own(tmp_path, monkeypatch):
-    import app.main as main_module
-
-    texts = {"a.pdf": "engineer resume", "b.pdf": "analyst resume"}
-    profiles = {"engineer resume": CandidateProfile(title="Junior Software Engineer", tech_stack=["Java"]),
-                "analyst resume": CandidateProfile(title="Junior Data Analyst", tech_stack=["Power BI"])}
-    extracted = []
-
-    def fake_extract(text, schema, instruction, model):
-        extracted.append(text)
-        return profiles[text]
-
-    monkeypatch.setattr(main_module, "load_resume_text", lambda path: texts[Path(path).name])
-    monkeypatch.setattr(main_module, "extract", fake_extract)
-    config = config_at(tmp_path)
-    config = type(config)(**{**config.__dict__, "resume_paths": (tmp_path / "a.pdf", tmp_path / "b.pdf")})
-
-    resumes = main_module.read_resumes(config)
-
-    assert [resume.name for resume in resumes] == ["a.pdf", "b.pdf"]
-    assert extracted == ["engineer resume", "analyst resume"], "one extraction per resume, never both at once"
-    assert resumes[1].text == "analyst resume"
-
-
-def test_the_rough_score_sees_every_resumes_direction(tmp_path):
-    import app.main as main_module
-    from core.resumes import Resume
-
-    resumes = [
-        Resume("a.pdf", "x", CandidateProfile(title="Junior Software Engineer", seniority="junior", tech_stack=["Java"])),
-        Resume("b.pdf", "y", CandidateProfile(title="Junior Data Analyst", tech_stack=["Power BI"])),
-    ]
-
-    profile_summary, _ = main_module.summaries(resumes, config_at(tmp_path))
-
-    assert "Junior Software Engineer / Junior Data Analyst" in profile_summary
-    assert "Java" in profile_summary and "Power BI" in profile_summary
