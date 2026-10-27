@@ -27,7 +27,7 @@ class FakeClock:
 
 def config_with(rpm: int, rpd: int, tmp_path) -> RunConfig:
     return RunConfig(
-        resume_path=tmp_path / "cv.pdf",
+        resume_paths=(tmp_path / "cv.pdf",),
         state_path=tmp_path / "seen.db",
         report_dir=tmp_path / "reports",
         list_url="https://example.invalid/",

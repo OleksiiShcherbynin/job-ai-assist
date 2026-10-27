@@ -46,7 +46,9 @@ class ModelRoles:
 
 @dataclass(frozen=True)
 class RunConfig:
-    resume_path: Path
+    resume_paths: tuple[Path, ...]
+    """In order of preference: a finalist that suits every resume equally is
+    judged against the first."""
     state_path: Path
     report_dir: Path
     list_url: str
@@ -61,6 +63,18 @@ class RunConfig:
 
     def quota_for(self, model: str) -> ModelQuota:
         return self.quotas.get(model, ModelQuota(CAUTIOUS_QUOTA_RPM, CAUTIOUS_QUOTA_RPD))
+
+
+def _resume_settings(run: dict) -> list[str]:
+    """`resume_paths` for several resumes, `resume_path` kept for one."""
+    if "resume_paths" in run and "resume_path" in run:
+        raise ValueError("set either resume_path or resume_paths in [run], not both")
+    if "resume_paths" not in run:
+        return [run.get("resume_path", "data/resume.pdf")]
+    paths = list(run["resume_paths"])
+    if not paths:
+        raise ValueError("resume_paths in [run] lists no resume")
+    return paths
 
 
 def load_config(path: str | Path) -> RunConfig:
@@ -83,7 +97,7 @@ def load_config(path: str | Path) -> RunConfig:
         return candidate if candidate.is_absolute() else base / candidate
 
     return RunConfig(
-        resume_path=resolve(run.get("resume_path", "data/resume.pdf")),
+        resume_paths=tuple(resolve(value) for value in _resume_settings(run)),
         state_path=resolve(run.get("state_path", "state/seen.db")),
         report_dir=resolve(run.get("report_dir", "reports")),
         list_url=search.get("list_url", DEFAULT_LIST_URL),
